@@ -143,6 +143,20 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
     } catch {}
   };
 
+  const removeOrder = (order: StoredOrder) => {
+    try {
+      const key = `predacy:orders:${walletAddress}`;
+      const stored: any[] = JSON.parse(localStorage.getItem(key) || "[]");
+      const updated = stored.filter((o) =>
+        !(o.batchId === order.batchId && o.commitment === order.commitment)
+      );
+      localStorage.setItem(key, JSON.stringify(updated));
+      setOrders((prev) => prev.filter((o) =>
+        !(o.batchId === order.batchId && o.commitment === order.commitment)
+      ));
+    } catch {}
+  };
+
   if (orders.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8">
@@ -213,9 +227,13 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
                       {SIDE_LABELS[order.side]}
                     </span>
                     <span className="text-[10px] text-muted-dim">Batch #{order.batchId}</span>
-                    {isClaimed && (
-                      <span className="text-[10px] text-accent tracking-widest uppercase ml-auto">CLAIMED ✓</span>
-                    )}
+                    <span className="ml-auto flex items-center gap-2">
+                      {isClaimed && (
+                        <span className="text-[10px] text-accent tracking-widest uppercase">CLAIMED ✓</span>
+                      )}
+                      <button onClick={() => removeOrder(order)} title="Remove"
+                        className="text-muted-dim hover:text-danger text-[11px] transition-colors">×</button>
+                    </span>
                   </div>
 
                   {/* Market */}

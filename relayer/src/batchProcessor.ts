@@ -146,11 +146,11 @@ export class BatchProcessor {
       state.settlingBatchId = batchIndex;
       state.currentBatchId = null;
 
-      // Pipeline: immediately open next batch
-      this.openNewBatch(marketKey).catch(console.error);
-
       // Process the closed batch (async)
       this.processBatch(marketKey, batchIndex).catch(console.error);
+
+      // Only open next batch if there were orders — don't cycle empty batches
+      // New batch will be opened on-demand when next order arrives
     } catch (err) {
       console.error(`[BatchProcessor] Failed to close batch:`, err);
     } finally {
@@ -165,8 +165,16 @@ export class BatchProcessor {
     commitment: bigint;
   }> {
     const state = this.markets.get(marketIdHex);
-    if (!state || state.currentBatchId === null) {
-      throw new Error("No active batch for market");
+    if (!state) {
+      throw new Error("Market not active");
+    }
+
+    // Open a new batch on-demand if none is active
+    if (state.currentBatchId === null) {
+      await this.openNewBatch(marketIdHex);
+    }
+    if (state.currentBatchId === null) {
+      throw new Error("Failed to open batch for market");
     }
 
     // Compute commitment

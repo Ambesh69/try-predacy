@@ -11,11 +11,7 @@ const solanaConnectors = toSolanaWalletConnectors({
 export default function PrivyWrapper({ children }: { children: React.ReactNode }) {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 
-  // Debug: log what the client actually receives
-  console.log("[Predacy] PRIVY_APP_ID received:", JSON.stringify(appId), "length:", appId?.length);
-
   if (!appId) {
-    console.warn("[Predacy] No NEXT_PUBLIC_PRIVY_APP_ID — wallet disabled");
     return <>{children}</>;
   }
 
