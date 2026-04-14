@@ -1,0 +1,21 @@
+[toolchain]
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+predacy = "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp"
+
+[programs.devnet]
+predacy = "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]

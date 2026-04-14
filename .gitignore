@@ -1,0 +1,14 @@
+.anchor
+.DS_Store
+target
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+.surfpool
+dist/
+.env
+.env.local
+.next/
+circuits/setup/*.ptau
+circuits/setup/*0000.zkey

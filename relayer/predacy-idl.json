@@ -1,0 +1,1953 @@
+{
+  "address": "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp",
+  "metadata": {
+    "name": "predacy",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "claim_position",
+      "discriminator": [
+        168,
+        90,
+        89,
+        44,
+        203,
+        246,
+        210,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store"
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_vault",
+          "writable": true
+        },
+        {
+          "name": "no_vault",
+          "writable": true
+        },
+        {
+          "name": "claimer_account",
+          "docs": [
+            "Claimer's token/USDC account for payout"
+          ],
+          "writable": true
+        },
+        {
+          "name": "claimer",
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment_index",
+          "type": "u16"
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "limit_price",
+          "type": "u64"
+        },
+        {
+          "name": "salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "claim_with_proof",
+      "discriminator": [
+        38,
+        165,
+        237,
+        119,
+        50,
+        165,
+        25,
+        163
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch"
+        },
+        {
+          "name": "nullifier",
+          "docs": [
+            "Nullifier PDA — init fails if already exists (double-claim prevention)"
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "nullifier_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_vault",
+          "writable": true
+        },
+        {
+          "name": "no_vault",
+          "writable": true
+        },
+        {
+          "name": "recipient_account",
+          "docs": [
+            "Recipient's token account for payout (can be any wallet — privacy)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "relayer",
+          "docs": [
+            "Relayer submits on behalf of trader (pays rent + fees)"
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "nullifier_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "filled_amount",
+          "type": "u64"
+        },
+        {
+          "name": "refund_amount",
+          "type": "u64"
+        },
+        {
+          "name": "proof_a",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "proof_b",
+          "type": {
+            "array": [
+              "u8",
+              128
+            ]
+          }
+        },
+        {
+          "name": "proof_c",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "close_batch",
+      "discriminator": [
+        166,
+        174,
+        35,
+        253,
+        209,
+        211,
+        181,
+        28
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "commit_order",
+      "discriminator": [
+        106,
+        167,
+        189,
+        186,
+        74,
+        113,
+        139,
+        232
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store",
+          "writable": true
+        },
+        {
+          "name": "user_usdc_account",
+          "docs": [
+            "User's USDC token account (source of escrow)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "usdc_vault",
+          "docs": [
+            "Market's USDC vault (escrow destination)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "commit_sell_order",
+      "discriminator": [
+        95,
+        225,
+        211,
+        127,
+        187,
+        12,
+        39,
+        2
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store",
+          "writable": true
+        },
+        {
+          "name": "user_token_account",
+          "docs": [
+            "User's outcome token account (YES or NO tokens being sold)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_vault",
+          "docs": [
+            "Market's YES or NO vault (destination for escrowed sell tokens)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "create_market",
+      "discriminator": [
+        103,
+        226,
+        97,
+        235,
+        200,
+        188,
+        251,
+        254
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "yes_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  121,
+                  101,
+                  115,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "no_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  95,
+                  109,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  100,
+                  99,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "yes_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  121,
+                  101,
+                  115,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "no_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  111,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_protocol",
+      "discriminator": [
+        188,
+        233,
+        252,
+        106,
+        134,
+        146,
+        202,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "usdc_mint",
+          "docs": [
+            "The USDC mint on Solana"
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "lock_funds",
+      "discriminator": [
+        171,
+        49,
+        9,
+        86,
+        156,
+        155,
+        2,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store"
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_vault",
+          "writable": true
+        },
+        {
+          "name": "no_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_mint",
+          "writable": true
+        },
+        {
+          "name": "no_mint",
+          "writable": true
+        },
+        {
+          "name": "relayer_usdc",
+          "docs": [
+            "Relayer's USDC account (receives gap USDC)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "relayer_yes",
+          "docs": [
+            "Relayer's YES token account (receives excess YES tokens)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "relayer_no",
+          "docs": [
+            "Relayer's NO token account (receives excess NO tokens)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "relayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "clearing_price",
+          "type": "u64"
+        },
+        {
+          "name": "filled_yes_buy_vol",
+          "type": "u64"
+        },
+        {
+          "name": "filled_no_buy_vol",
+          "type": "u64"
+        },
+        {
+          "name": "filled_yes_sell_qty",
+          "type": "u64"
+        },
+        {
+          "name": "filled_no_sell_qty",
+          "type": "u64"
+        },
+        {
+          "name": "yes_gap",
+          "type": "u64"
+        },
+        {
+          "name": "no_gap",
+          "type": "u64"
+        },
+        {
+          "name": "final_excess_yes",
+          "type": "u64"
+        },
+        {
+          "name": "final_excess_no",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_batch",
+      "discriminator": [
+        103,
+        163,
+        23,
+        69,
+        63,
+        155,
+        108,
+        163
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "redeem_outcome",
+      "discriminator": [
+        132,
+        231,
+        109,
+        20,
+        197,
+        172,
+        180,
+        32
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "winning_mint",
+          "docs": [
+            "The winning outcome token mint (YES or NO)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user_token_account",
+          "docs": [
+            "User's winning token account (tokens to burn)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user_usdc_account",
+          "docs": [
+            "User's USDC account (receives payout)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "usdc_vault",
+          "docs": [
+            "Market's USDC vault (source of payout)"
+          ],
+          "writable": true
+        },
+        {
+          "name": "user",
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "rescue_stuck_order",
+      "discriminator": [
+        92,
+        54,
+        23,
+        99,
+        28,
+        25,
+        174,
+        123
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "commitment_store"
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_vault",
+          "writable": true
+        },
+        {
+          "name": "no_vault",
+          "writable": true
+        },
+        {
+          "name": "claimer_account",
+          "writable": true
+        },
+        {
+          "name": "claimer",
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "commitment_index",
+          "type": "u16"
+        },
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "limit_price",
+          "type": "u64"
+        },
+        {
+          "name": "salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolve_market",
+      "discriminator": [
+        155,
+        23,
+        80,
+        173,
+        46,
+        74,
+        23,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "outcome",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_batch",
+      "discriminator": [
+        22,
+        2,
+        21,
+        223,
+        225,
+        122,
+        163,
+        214
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "batch",
+          "writable": true
+        },
+        {
+          "name": "usdc_vault",
+          "writable": true
+        },
+        {
+          "name": "yes_vault",
+          "writable": true
+        },
+        {
+          "name": "no_vault",
+          "writable": true
+        },
+        {
+          "name": "relayer_usdc",
+          "docs": [
+            "Relayer returns gap tokens and USDC proceeds"
+          ],
+          "writable": true
+        },
+        {
+          "name": "relayer_yes",
+          "writable": true
+        },
+        {
+          "name": "relayer_no",
+          "writable": true
+        },
+        {
+          "name": "relayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "claim_merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "proof_a",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "proof_b",
+          "type": {
+            "array": [
+              "u8",
+              128
+            ]
+          }
+        },
+        {
+          "name": "proof_c",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Batch",
+      "discriminator": [
+        156,
+        194,
+        70,
+        44,
+        22,
+        88,
+        137,
+        44
+      ]
+    },
+    {
+      "name": "CommitmentStore",
+      "discriminator": [
+        91,
+        127,
+        124,
+        107,
+        211,
+        144,
+        195,
+        254
+      ]
+    },
+    {
+      "name": "Market",
+      "discriminator": [
+        219,
+        190,
+        213,
+        55,
+        0,
+        227,
+        198,
+        154
+      ]
+    },
+    {
+      "name": "Nullifier",
+      "discriminator": [
+        18,
+        56,
+        142,
+        165,
+        181,
+        158,
+        187,
+        133
+      ]
+    },
+    {
+      "name": "ProtocolConfig",
+      "discriminator": [
+        207,
+        91,
+        250,
+        28,
+        152,
+        179,
+        215,
+        209
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "BatchClosed",
+      "discriminator": [
+        192,
+        76,
+        201,
+        211,
+        10,
+        212,
+        139,
+        232
+      ]
+    },
+    {
+      "name": "BatchOpened",
+      "discriminator": [
+        232,
+        120,
+        56,
+        150,
+        9,
+        193,
+        191,
+        96
+      ]
+    },
+    {
+      "name": "BatchSettled",
+      "discriminator": [
+        238,
+        14,
+        187,
+        192,
+        127,
+        95,
+        104,
+        9
+      ]
+    },
+    {
+      "name": "ClaimProcessed",
+      "discriminator": [
+        214,
+        130,
+        82,
+        189,
+        1,
+        255,
+        166,
+        249
+      ]
+    },
+    {
+      "name": "FundsLocked",
+      "discriminator": [
+        227,
+        93,
+        162,
+        69,
+        181,
+        4,
+        71,
+        157
+      ]
+    },
+    {
+      "name": "MarketResolved",
+      "discriminator": [
+        89,
+        67,
+        230,
+        95,
+        143,
+        106,
+        199,
+        202
+      ]
+    },
+    {
+      "name": "OrderCommitted",
+      "discriminator": [
+        120,
+        115,
+        67,
+        82,
+        131,
+        215,
+        13,
+        83
+      ]
+    },
+    {
+      "name": "OutcomeRedeemed",
+      "discriminator": [
+        110,
+        31,
+        124,
+        53,
+        63,
+        101,
+        155,
+        232
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidBatchStatus",
+      "msg": "Batch is not in the expected status"
+    },
+    {
+      "code": 6001,
+      "name": "BatchWindowNotElapsed",
+      "msg": "Batch window has not elapsed yet"
+    },
+    {
+      "code": 6002,
+      "name": "BatchWindowElapsed",
+      "msg": "Batch window has already elapsed"
+    },
+    {
+      "code": 6003,
+      "name": "MaxOrdersReached",
+      "msg": "Maximum number of orders reached for this batch"
+    },
+    {
+      "code": 6004,
+      "name": "CommitmentMismatch",
+      "msg": "Commitment hash mismatch"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidOrderSide",
+      "msg": "Invalid order side"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidClearingPrice",
+      "msg": "Invalid clearing price"
+    },
+    {
+      "code": 6007,
+      "name": "NullifierAlreadyUsed",
+      "msg": "Nullifier already used — double claim attempt"
+    },
+    {
+      "code": 6008,
+      "name": "ProofVerificationFailed",
+      "msg": "ZK proof verification failed"
+    },
+    {
+      "code": 6009,
+      "name": "MarketAlreadyResolved",
+      "msg": "Market already resolved"
+    },
+    {
+      "code": 6010,
+      "name": "MarketNotResolved",
+      "msg": "Market not resolved yet"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidOutcome",
+      "msg": "Invalid outcome for redemption"
+    },
+    {
+      "code": 6012,
+      "name": "AlreadyClaimed",
+      "msg": "Order already claimed"
+    },
+    {
+      "code": 6013,
+      "name": "RescueDelayNotElapsed",
+      "msg": "Rescue delay not elapsed — must wait 7 days"
+    },
+    {
+      "code": 6014,
+      "name": "Unauthorized",
+      "msg": "Unauthorized — caller is not the authority"
+    },
+    {
+      "code": 6015,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6016,
+      "name": "InsufficientBalance",
+      "msg": "Insufficient vault balance"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidMarketId",
+      "msg": "Invalid market ID"
+    },
+    {
+      "code": 6018,
+      "name": "BatchMarketMismatch",
+      "msg": "Batch does not belong to this market"
+    }
+  ],
+  "types": [
+    {
+      "name": "Batch",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "opened_at",
+            "type": "i64"
+          },
+          {
+            "name": "closed_at",
+            "type": "i64"
+          },
+          {
+            "name": "total_deposited",
+            "type": "u64"
+          },
+          {
+            "name": "total_sell_yes",
+            "type": "u64"
+          },
+          {
+            "name": "total_sell_no",
+            "type": "u64"
+          },
+          {
+            "name": "clearing_price",
+            "type": "u64"
+          },
+          {
+            "name": "commitment_count",
+            "type": "u16"
+          },
+          {
+            "name": "commitment_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "claim_merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "filled_yes_buy_vol",
+            "type": "u64"
+          },
+          {
+            "name": "filled_no_buy_vol",
+            "type": "u64"
+          },
+          {
+            "name": "filled_yes_sell_qty",
+            "type": "u64"
+          },
+          {
+            "name": "filled_no_sell_qty",
+            "type": "u64"
+          },
+          {
+            "name": "yes_gap",
+            "type": "u64"
+          },
+          {
+            "name": "no_gap",
+            "type": "u64"
+          },
+          {
+            "name": "final_excess_yes",
+            "type": "u64"
+          },
+          {
+            "name": "final_excess_no",
+            "type": "u64"
+          },
+          {
+            "name": "claimed_bitmap",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "commitment_count",
+            "type": "u16"
+          },
+          {
+            "name": "closed_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "opened_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "claim_merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClaimProcessed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "nullifier",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "side",
+            "type": "u8"
+          },
+          {
+            "name": "filled_amount",
+            "type": "u64"
+          },
+          {
+            "name": "refund_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CommitmentEntry",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CommitmentStore",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "count",
+            "type": "u32"
+          },
+          {
+            "name": "_padding",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "commitments",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "CommitmentEntry"
+                  }
+                },
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "FundsLocked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "clearing_price",
+            "type": "u64"
+          },
+          {
+            "name": "filled_yes_buy_vol",
+            "type": "u64"
+          },
+          {
+            "name": "filled_no_buy_vol",
+            "type": "u64"
+          },
+          {
+            "name": "filled_yes_sell_qty",
+            "type": "u64"
+          },
+          {
+            "name": "filled_no_sell_qty",
+            "type": "u64"
+          },
+          {
+            "name": "yes_gap",
+            "type": "u64"
+          },
+          {
+            "name": "no_gap",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Market",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "yes_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "no_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "yes_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "no_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "resolved",
+            "type": "bool"
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketResolved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "outcome",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Nullifier",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderCommitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "commitment_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "commitment_index",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OutcomeRedeemed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury",
+            "type": "pubkey"
+          },
+          {
+            "name": "usdc_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "batch_window_secs",
+            "type": "u64"
+          },
+          {
+            "name": "max_orders_per_batch",
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "BATCH_SEED",
+      "type": "bytes",
+      "value": "[98, 97, 116, 99, 104]"
+    },
+    {
+      "name": "COMMITMENTS_SEED",
+      "type": "bytes",
+      "value": "[99, 111, 109, 109, 105, 116, 109, 101, 110, 116, 115]"
+    },
+    {
+      "name": "MARKET_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 107, 101, 116]"
+    },
+    {
+      "name": "NO_MINT_SEED",
+      "type": "bytes",
+      "value": "[110, 111, 95, 109, 105, 110, 116]"
+    },
+    {
+      "name": "NO_VAULT_SEED",
+      "type": "bytes",
+      "value": "[110, 111, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "NULLIFIER_SEED",
+      "type": "bytes",
+      "value": "[110, 117, 108, 108, 105, 102, 105, 101, 114]"
+    },
+    {
+      "name": "PROTOCOL_SEED",
+      "type": "bytes",
+      "value": "[112, 114, 111, 116, 111, 99, 111, 108]"
+    },
+    {
+      "name": "USDC_VAULT_SEED",
+      "type": "bytes",
+      "value": "[117, 115, 100, 99, 95, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "YES_MINT_SEED",
+      "type": "bytes",
+      "value": "[121, 101, 115, 95, 109, 105, 110, 116]"
+    },
+    {
+      "name": "YES_VAULT_SEED",
+      "type": "bytes",
+      "value": "[121, 101, 115, 95, 118, 97, 117, 108, 116]"
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+import { PublicKey } from "@solana/web3.js";
+
+// ─── Order Sides (matches Solana program) ───
+
+export enum OrderSide {
+  YES_BUY = 0,
+  YES_SELL = 1,
+  NO_BUY = 2,
+  NO_SELL = 3,
+}
+
+export enum BatchStatus {
+  OPEN = 0,
+  SETTLING = 1,
+  LOCKED = 2,
+  SETTLED = 3,
+}
+
+// ─── Order (submitted by user) ───
+
+export interface Order {
+  side: OrderSide;
+  amount: bigint;       // USDC (BUY) or token qty (SELL), 6 decimals
+  limitPrice: bigint;   // 6-decimal fixed point (e.g. 650000n = $0.65)
+  salt: bigint;         // 256-bit random secret
+  commitment?: bigint;  // Poseidon commitment hash (computed by relayer)
+}
+
+// ─── Clearing Price Result ───
+
+export interface ClearingResult {
+  clearingPrice: bigint;
+  filledYesBuyVol: bigint;
+  filledNoBuyVol: bigint;
+  filledYesSellQty: bigint;
+  filledNoSellQty: bigint;
+  filledOrders: Order[];
+  unfilledOrders: Order[];
+}
+
+// ─── Per-Market State ───
+
+export interface MarketState {
+  marketId: Buffer;           // 32 bytes
+  currentBatchId: bigint | null;
+  settlingBatchId: bigint | null;
+  processingBatch: boolean;
+  openingBatch: boolean;
+  closingBatch: boolean;
+  batchRunningUsd: bigint;
+  lastOrderSubmitAt: number;
+  batchOpenedAt: number;      // unix seconds when current batch opened
+  orders: Map<string, Order>; // commitment hash → order
+}
+
+// ─── Claim Job ───
+
+export interface ClaimJob {
+  id: string;
+  status: "pending" | "proving" | "submitting" | "done" | "error";
+  batchId: bigint;
+  marketId: Buffer;
+  side: OrderSide;
+  amount: bigint;
+  limitPrice: bigint;
+  salt: bigint;
+  recipient: PublicKey;
+  txHash?: string;
+  error?: string;
+}
+
+// ─── ZK Proof ───
+
+export interface Groth16Proof {
+  proofA: Uint8Array;  // 64 bytes (G1)
+  proofB: Uint8Array;  // 128 bytes (G2)
+  proofC: Uint8Array;  // 64 bytes (G1)
+}
+
+// ─── Constants ───
+
+export const PRICE_DECIMALS = 1_000_000n;
+export const BATCH_WINDOW_MS = 30_000;
+export const MAX_BATCH_ORDERS = 8; // circuit limit
+export const MAX_BATCH_USD = 5_000_000_000n; // $5,000 in 6-dec
