@@ -41,6 +41,16 @@ function formatUsdc(amount: string | bigint): string {
   return `$${n.toFixed(2)}`;
 }
 
+function cleanError(raw: string): string {
+  if (raw.includes("insufficient funds")) return "Vault has insufficient funds — batch may need re-settlement.";
+  if (raw.includes("AccountNotInitialized")) return "Token account not found — retrying may fix this.";
+  if (raw.includes("NullifierAlreadyUsed")) return "Already claimed — this position was previously collected.";
+  if (raw.includes("BatchNotSettled")) return "Batch hasn't settled yet — wait a few seconds.";
+  if (raw.includes("Simulation failed")) return "Transaction failed — try again.";
+  if (raw.length > 80) return raw.slice(0, 80) + "…";
+  return raw;
+}
+
 function formatPrice(price: string | bigint): string {
   const c = Number(BigInt(price)) / 10_000;
   return `${c.toFixed(1)}¢`;
@@ -103,7 +113,7 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
               markClaimed(order);
             } else if (status.status === "error") {
               clearInterval(poll);
-              setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: status.error || "Claim failed" } }));
+              setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: cleanError(status.error || "Claim failed") } }));
               setClaimingBatch(null);
             }
           } catch {}
@@ -114,11 +124,11 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
           }
         }, 3000);
       } else {
-        setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: data.error || "Failed" } }));
+        setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: cleanError(data.error || "Failed") } }));
         setClaimingBatch(null);
       }
     } catch (err: any) {
-      setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: err.message || "Network error" } }));
+      setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: cleanError(err.message || "Network error") } }));
       setClaimingBatch(null);
     }
   };

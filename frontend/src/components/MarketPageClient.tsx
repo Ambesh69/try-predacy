@@ -65,10 +65,17 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
             ...prev,
             batchId: data.currentBatchId ? BigInt(data.currentBatchId) : prev.batchId,
             commitmentCount: data.orderCount ?? prev.commitmentCount,
-            status: data.processingBatch ? 1 : 0,
+            status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
           }));
+          // Update commitment feed
+          if (data.commitments?.length) {
+            setCommitments(data.commitments.map((c: any) => ({
+              hash: c.hash as `0x${string}`,
+              timestamp: c.timestamp,
+            })));
+          }
         } else {
           setBatchActive(false);
         }

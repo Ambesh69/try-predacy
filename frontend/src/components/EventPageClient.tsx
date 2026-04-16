@@ -234,7 +234,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
             ...prev,
             batchId: data.currentBatchId ? BigInt(data.currentBatchId) : prev.batchId,
             commitmentCount: data.orderCount ?? 0,
-            status: data.processingBatch ? 1 : 0,
+            status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
           }));

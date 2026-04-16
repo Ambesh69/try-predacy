@@ -14,6 +14,20 @@ interface OrderFormProps {
 const PRICE_DECIMALS = 1_000_000;
 const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL || "http://localhost:3001";
 
+function cleanError(raw: string): string {
+  if (raw.includes("insufficient funds")) return "Insufficient token balance for this order.";
+  if (raw.includes("InsufficientBalance")) return "Not enough tokens in your wallet.";
+  if (raw.includes("BatchWindowNotElapsed")) return "Batch is still open — try again in a few seconds.";
+  if (raw.includes("MaxOrdersReached")) return "Batch is full — your order will go in the next batch.";
+  if (raw.includes("No active batch")) return "Starting market — please try again.";
+  if (raw.includes("Market not active")) return "Initializing market — please try again.";
+  if (raw.includes("Failed to fetch")) return "Relayer is unreachable — check your connection.";
+  if (raw.includes("AccountNotInitialized")) return "Account setup needed — retrying...";
+  if (raw.includes("Simulation failed")) return "Transaction failed — the batch may have closed. Try again.";
+  if (raw.length > 80) return raw.slice(0, 80) + "…";
+  return raw;
+}
+
 export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: OrderFormProps) {
   const { authenticated, login, user } = usePrivy();
   const solanaWallet = user?.linkedAccounts?.find((a: any) => a.type === "wallet" && a.chainType === "solana") as any;
@@ -93,13 +107,15 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         });
         if (orders.length > 200) orders.shift();
         localStorage.setItem(`predacy:orders:${walletAddress}`, JSON.stringify(orders));
-        setResult({ ok: true, message: `Order placed in batch #${data.batchId}` });
+        setResult({ ok: true, message: `Order sealed in batch #${data.batchId}` });
         setAmount("");
+        // Auto-clear success after 5s
+        setTimeout(() => setResult(null), 5000);
       } else {
-        setResult({ ok: false, message: data.error || "Order failed" });
+        setResult({ ok: false, message: cleanError(data.error || "Order failed") });
       }
     } catch (err: any) {
-      setResult({ ok: false, message: err.message || "Network error" });
+      setResult({ ok: false, message: cleanError(err.message || "Network error") });
     } finally {
       setSubmitting(false);
     }
@@ -282,12 +298,32 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
             : mode === "buy" ? `BUY ${side.toUpperCase()}` : `SELL ${side.toUpperCase()}`}
         </button>
 
-        {/* Result */}
+        {/* Result toast */}
         {result && (
           <div className={clsx(
-            "text-[11px] p-2 text-center border",
-            result.ok ? "border-accent/30 text-accent bg-accent/5" : "border-danger/30 text-danger bg-danger/5"
-          )}>{result.message}</div>
+            "p-3 border animate-slide-up",
+            result.ok ? "border-accent/30 bg-accent/5" : "border-danger/30 bg-danger/5"
+          )}>
+            <div className="flex items-center gap-2">
+              {result.ok ? (
+                <svg className="w-4 h-4 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4 text-danger flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className={clsx("text-[11px] font-bold tracking-widest uppercase", result.ok ? "text-accent" : "text-danger")}>
+                  {result.ok ? "ORDER SEALED" : "ORDER FAILED"}
+                </p>
+                <p className={clsx("text-[10px] mt-0.5", result.ok ? "text-accent/70" : "text-danger/70")}>
+                  {result.message}
+                </p>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

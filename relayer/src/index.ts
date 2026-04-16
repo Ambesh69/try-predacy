@@ -102,6 +102,12 @@ app.get("/batch-status", (req, res) => {
     return res.status(404).json({ error: "Market not active" });
   }
 
+  // Collect commitment hashes for the feed (without revealing amounts/sides)
+  const commitments: Array<{ hash: string; timestamp: number }> = [];
+  for (const [hash, order] of state.orders.entries()) {
+    commitments.push({ hash: "0x" + BigInt(hash).toString(16).padStart(64, "0"), timestamp: state.batchOpenedAt * 1000 });
+  }
+
   res.json({
     currentBatchId: state.currentBatchId?.toString() || null,
     settlingBatchId: state.settlingBatchId?.toString() || null,
@@ -109,6 +115,7 @@ app.get("/batch-status", (req, res) => {
     batchRunningUsd: state.batchRunningUsd.toString(),
     processingBatch: state.processingBatch,
     openedAt: state.batchOpenedAt,
+    commitments,
   });
 });
 
