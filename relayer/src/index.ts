@@ -119,6 +119,7 @@ app.get("/batch-status", (req, res) => {
   }
 
   res.json({
+    active: state.currentBatchId !== null,
     currentBatchId: state.currentBatchId?.toString() || null,
     settlingBatchId: state.settlingBatchId?.toString() || null,
     orderCount: state.orders.size,
