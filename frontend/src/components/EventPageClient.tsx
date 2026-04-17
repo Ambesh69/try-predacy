@@ -229,10 +229,15 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
         const res = await fetch(`${relayerUrl}/batch-status?marketId=${selectedMarket.conditionId}`);
         if (res.ok) {
           const data = await res.json();
+          // active=false means market not yet started on relayer
+          if (data.active === false || !data.currentBatchId) {
+            setBatchActive(false);
+            return;
+          }
           setBatchActive(true);
           setBatch((prev) => ({
             ...prev,
-            batchId: data.currentBatchId ? BigInt(data.currentBatchId) : prev.batchId,
+            batchId: BigInt(data.currentBatchId),
             commitmentCount: data.orderCount ?? 0,
             status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,

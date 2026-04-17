@@ -59,11 +59,15 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
         const res = await fetch(`${relayerUrl}/batch-status?marketId=${id}`);
         if (res.ok) {
           const data = await res.json();
+          if (data.active === false || !data.currentBatchId) {
+            setBatchActive(false);
+            return;
+          }
           setBatchStatus(data);
           setBatchActive(true);
           setBatch((prev) => ({
             ...prev,
-            batchId: data.currentBatchId ? BigInt(data.currentBatchId) : prev.batchId,
+            batchId: BigInt(data.currentBatchId),
             commitmentCount: data.orderCount ?? prev.commitmentCount,
             status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,

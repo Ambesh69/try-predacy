@@ -99,7 +99,17 @@ app.get("/batch-status", (req, res) => {
 
   const state = processor.getMarketState(marketId.replace("0x", ""));
   if (!state) {
-    return res.status(404).json({ error: "Market not active" });
+    // Return 200 with inactive state — no batch exists yet, but that's not an error
+    return res.json({
+      active: false,
+      currentBatchId: null,
+      settlingBatchId: null,
+      orderCount: 0,
+      batchRunningUsd: "0",
+      processingBatch: false,
+      openedAt: null,
+      commitments: [],
+    });
   }
 
   // Collect commitment hashes for the feed (without revealing amounts/sides)
