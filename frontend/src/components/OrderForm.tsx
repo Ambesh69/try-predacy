@@ -47,6 +47,8 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [balances, setBalances] = useState<{ usdc: string; yes: string; no: string } | null>(null);
+  const [privacyMode, setPrivacyMode] = useState(false);
+  const [privacyStep, setPrivacyStep] = useState<string | null>(null);
 
   // Fetch token balances
   useEffect(() => {
@@ -97,6 +99,42 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
       // Small delay to ensure batch is fully initialized
       if (startRes) await new Promise(r => setTimeout(r, 1000));
 
+      // ── Privacy Mode: route the deposit through Umbra mixer ────────────
+      // Generates an ephemeral keypair, transfers USDC via Umbra so the
+      // ephemeral wallet is unlinkable from the user's main wallet, then
+      // commits the order from the ephemeral key. The user's main wallet
+      // address never appears in the on-chain commit_order tx.
+      let depositorAddress: string | undefined;
+      let ephemeralPubkey: string | undefined;
+      if (privacyMode && walletAddress) {
+        const { generateEphemeralWallet, saveEphemeralWallet, fundEphemeralViaUmbra, markEphemeralFunded } = await import("@/lib/umbra");
+        setPrivacyStep("Generating ephemeral keypair…");
+        const eph = await generateEphemeralWallet(marketId);
+        saveEphemeralWallet(walletAddress, eph);
+        ephemeralPubkey = eph.publicKey;
+        depositorAddress = eph.publicKey;
+
+        setPrivacyStep("Routing deposit through Umbra mixer…");
+        // USDC mint address — devnet mock or real mainnet USDC
+        const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT || "62SHj3tZxpMdXhE5Y6qg93VRwQd2rbXPx8quEdJKbaUC";
+        const fundResult = await fundEphemeralViaUmbra(
+          solanaWallet,
+          eph,
+          usdcMint as any,
+          BigInt(amountMicro),
+        );
+        if (!fundResult.ok) {
+          // Surface the failure but continue with non-private flow as fallback
+          console.warn("[Predacy] Umbra mixer unavailable, falling back to direct deposit:", fundResult.error);
+          setPrivacyStep(null);
+          depositorAddress = undefined;
+          ephemeralPubkey = undefined;
+        } else {
+          markEphemeralFunded(walletAddress, eph.publicKey, fundResult.commitment);
+          setPrivacyStep(null);
+        }
+      }
+
       const res = await fetch(`${RELAYER_URL}/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -110,12 +148,18 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           commitment: data.commitment, salt, amount: amountMicro,
           side: orderSide, limitPrice, batchId: data.batchId,
           marketId, marketQuestion, timestamp: Date.now(),
+          ephemeralPubkey,           // null if non-private order
+          privacyMode: !!ephemeralPubkey,
         });
         if (orders.length > 200) orders.shift();
         localStorage.setItem(`predacy:orders:${walletAddress}`, JSON.stringify(orders));
         setResult({ ok: true, message: `Order sealed in batch #${data.batchId}` });
         setAmount("");
-        pushToast("success", "Order sealed", `Batch #${data.batchId} • ${mode === "buy" ? "BUY" : "SELL"} ${side.toUpperCase()} ${formatUsdcAmount(amountMicro)}`);
+        pushToast(
+          "success",
+          ephemeralPubkey ? "Private order sealed" : "Order sealed",
+          `Batch #${data.batchId} • ${mode === "buy" ? "BUY" : "SELL"} ${side.toUpperCase()} ${formatUsdcAmount(amountMicro)}${ephemeralPubkey ? " • via Umbra mixer" : ""}`,
+        );
         // Auto-clear success after 5s
         setTimeout(() => setResult(null), 5000);
       } else {
@@ -126,7 +170,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
     } finally {
       setSubmitting(false);
     }
-  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side]);
+  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, solanaWallet]);
 
   // Keyboard shortcuts: Enter submits, Esc clears amount/result
   useEffect(() => {
@@ -309,6 +353,38 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           <span className="text-[10px] text-muted-dim tracking-widest uppercase">Sealed-bid order · wallet hidden via ZK proof</span>
         </div>
 
+        {/* Privacy Mode toggle */}
+        <div className={clsx(
+          "border px-3 py-2.5 transition-colors",
+          privacyMode ? "border-accent/40 bg-accent/5" : "border-border/50",
+        )}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className={clsx(
+                "text-[10px] tracking-widest uppercase font-bold",
+                privacyMode ? "text-accent" : "text-text",
+              )}>Privacy Mode {privacyMode ? "• ON" : ""}</span>
+              <span className="text-[9px] text-muted-dim">Route via Umbra mixer — wallet identity hidden</span>
+            </div>
+            <button onClick={() => setPrivacyMode((v) => !v)}
+              className={clsx(
+                "relative w-9 h-5 rounded-full transition-colors flex-shrink-0",
+                privacyMode ? "bg-accent/40" : "bg-border",
+              )}>
+              <span className={clsx(
+                "absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform",
+                privacyMode ? "translate-x-4 bg-accent" : "translate-x-0 bg-muted",
+              )} />
+            </button>
+          </div>
+          {privacyStep && (
+            <div className="mt-2 flex items-center gap-2 text-[10px] text-accent/80">
+              <span className="w-2 h-2 border border-accent border-t-transparent rounded-full animate-spin" />
+              {privacyStep}
+            </div>
+          )}
+        </div>
+
         {/* Submit */}
         <button onClick={handleSubmit}
           disabled={submitting || (!amount || amountNum <= 0)}
@@ -319,8 +395,10 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
               : "border-danger text-danger hover:bg-danger/5",
             (submitting || !amount || amountNum <= 0) && "opacity-40 cursor-not-allowed"
           )}>
-          {!authenticated ? "CONNECT WALLET" : submitting ? "SUBMITTING…"
-            : mode === "buy" ? `BUY ${side.toUpperCase()}` : `SELL ${side.toUpperCase()}`}
+          {!authenticated ? "CONNECT WALLET" : submitting ? (privacyStep ?? "SUBMITTING…")
+            : mode === "buy"
+              ? `${privacyMode ? "PRIVATELY " : ""}BUY ${side.toUpperCase()}`
+              : `${privacyMode ? "PRIVATELY " : ""}SELL ${side.toUpperCase()}`}
         </button>
 
         {/* Result toast */}

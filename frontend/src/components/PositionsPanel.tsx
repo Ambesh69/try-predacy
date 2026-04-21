@@ -15,6 +15,8 @@ interface StoredOrder {
   marketId: string;
   marketQuestion: string;
   timestamp: number;
+  ephemeralPubkey?: string;  // present if this order used Umbra Privacy Mode
+  privacyMode?: boolean;
 }
 
 interface PositionsPanelProps {
@@ -269,12 +271,18 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
               return (
                 <div key={`${order.batchId}-${i}`} className="px-4 py-3 space-y-2">
                   {/* Header */}
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[10px] px-1.5 py-0.5 border font-mono tracking-widest uppercase"
                       style={{ color: SIDE_COLORS[order.side], borderColor: `${SIDE_COLORS[order.side]}40`, background: `${SIDE_COLORS[order.side]}08` }}>
                       {SIDE_LABELS[order.side]}
                     </span>
                     <span className="text-[10px] text-muted-dim">Batch #{order.batchId}</span>
+                    {order.privacyMode && (
+                      <span title={`Funded via Umbra mixer · ephemeral key ${order.ephemeralPubkey?.slice(0, 6)}…${order.ephemeralPubkey?.slice(-4)}`}
+                        className="text-[9px] px-1.5 py-0.5 border border-blue/40 text-blue bg-blue/5 tracking-widest uppercase font-bold">
+                        🛡 Private
+                      </span>
+                    )}
                     <span className="ml-auto flex items-center gap-2">
                       {isClaimed && (
                         <span className="text-[10px] text-accent tracking-widest uppercase">CLAIMED ✓</span>
@@ -286,6 +294,13 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
 
                   {/* Market */}
                   <p className="text-[11px] text-text/80 truncate">{order.marketQuestion}</p>
+
+                  {/* Ephemeral key reveal (privacy mode) */}
+                  {order.privacyMode && order.ephemeralPubkey && (
+                    <p className="text-[9px] text-muted-dim hash-text break-all">
+                      via {order.ephemeralPubkey.slice(0, 8)}…{order.ephemeralPubkey.slice(-8)}
+                    </p>
+                  )}
 
                   {/* Metrics */}
                   <div className="flex items-center gap-3 text-[10px] tabular-nums">
