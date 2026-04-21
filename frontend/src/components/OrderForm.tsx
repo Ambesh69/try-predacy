@@ -51,7 +51,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [balances, setBalances] = useState<{ usdc: string; yes: string; no: string } | null>(null);
-  const [privacyMode, setPrivacyMode] = useState(false);
+  const [privacyMode, setPrivacyMode] = useState(true);
   const [privacyStep, setPrivacyStep] = useState<string | null>(null);
 
   // Fetch token balances
