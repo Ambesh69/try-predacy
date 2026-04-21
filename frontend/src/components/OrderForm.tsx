@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
+import { useWallets as useSolanaWallets } from "@privy-io/react-auth/solana";
 import clsx from "clsx";
 import { pushToast } from "@/components/Toast";
 
@@ -36,8 +37,11 @@ function cleanError(raw: string): string {
 
 export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: OrderFormProps) {
   const { authenticated, login, user } = usePrivy();
-  const solanaWallet = user?.linkedAccounts?.find((a: any) => a.type === "wallet" && a.chainType === "solana") as any;
-  const walletAddress = solanaWallet?.address ?? user?.wallet?.address;
+  const solanaWalletMeta = user?.linkedAccounts?.find((a: any) => a.type === "wallet" && a.chainType === "solana") as any;
+  const walletAddress = solanaWalletMeta?.address ?? user?.wallet?.address;
+  // The actual wallet-standard interface (needed for Umbra SDK)
+  const { wallets: solanaWallets } = useSolanaWallets();
+  const standardWallet = solanaWallets[0]; // ConnectedStandardSolanaWallet — has standardWallet + account
 
   const [mode, setMode] = useState<"buy" | "sell">("buy");
   const [side, setSide] = useState<"yes" | "no">("yes");
@@ -117,10 +121,15 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         setPrivacyStep("Routing deposit through Umbra mixer…");
         // USDC mint address — devnet mock or real mainnet USDC
         const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT || "62SHj3tZxpMdXhE5Y6qg93VRwQd2rbXPx8quEdJKbaUC";
+        // Pass the wallet-standard interface (Privy's ConnectedStandardSolanaWallet
+        // exposes .standardWallet for the wallet object — Umbra needs both wallet + account)
+        const walletStandardBundle = standardWallet
+          ? { wallet: (standardWallet as any).standardWallet, account: (standardWallet as any).standardWallet?.accounts?.[0] }
+          : null;
         const fundResult = await fundEphemeralViaUmbra(
-          solanaWallet,
+          walletStandardBundle,
           eph,
-          usdcMint as any,
+          usdcMint,
           BigInt(amountMicro),
         );
         if (!fundResult.ok) {
@@ -170,7 +179,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
     } finally {
       setSubmitting(false);
     }
-  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, solanaWallet]);
+  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, standardWallet]);
 
   // Keyboard shortcuts: Enter submits, Esc clears amount/result
   useEffect(() => {
