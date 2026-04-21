@@ -6,6 +6,7 @@ import EventCard from "@/components/EventCard";
 import WalletButton from "@/components/WalletButton";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
+const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 import { MOCK_MARKETS, getEvents, type PolyEvent } from "@/lib/polymarket";
 import { getRelayerUrl } from "@/lib/relayerUrl";
 import {
@@ -124,19 +125,21 @@ export default function HomePage() {
       </div>
 
       {/* Header */}
-      <header className="border-b border-border px-4 md:px-6 py-[22px] flex items-end justify-between bg-surface/25 backdrop-blur-[2px]">
+      <header className="border-b border-border px-4 md:px-6 py-4 md:py-[22px] flex flex-col md:flex-row md:items-end md:justify-between gap-4 bg-surface/25 backdrop-blur-[2px]">
         <div>
-          <h1 className="text-[2.65rem] font-black tracking-tight leading-none text-text glow-blue"
+          <h1 className="text-[2rem] md:text-[2.65rem] font-black tracking-tight leading-none text-text glow-blue"
             style={{ fontFamily: "var(--font-display)" }}>PREDACY</h1>
-          <p className="text-muted text-xs tracking-widest mt-1">
-            DARK POOL PREDICTION MARKETS · <span className="text-accent/70">SEALED-BID BATCH AUCTIONS</span>
+          <p className="text-muted text-[10px] md:text-xs tracking-widest mt-1">
+            <span className="hidden sm:inline">DARK POOL PREDICTION MARKETS · </span>
+            <span className="text-accent/70">SEALED-BID BATCH AUCTIONS</span>
           </p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-3 flex-wrap">
           <div className="flex items-center gap-1.5 border border-border-bright bg-surface px-3 py-1.5 shadow-[0_0_0_1px_rgba(78,163,255,0.12)]">
             <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
             <span className="text-[11px] text-muted tracking-widest">SOLANA</span>
           </div>
+          <HeaderBalance />
           <FaucetButton />
           <WalletButton />
         </div>
@@ -214,14 +217,39 @@ export default function HomePage() {
         </div>
 
         <div className="active-markets-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-border/90 shadow-[0_0_0_1px_rgba(78,163,255,0.08)]">
-          {displayedEvents.map((event, idx) => {
-            const shouldShimmer = idx < 2 || recentlyLiveEventIds.has(event.id);
-            return (
-              <div key={event.id} className={`bg-bg ${shouldShimmer ? "shimmer-card" : ""}`}>
-                <EventCard event={event} liveMarketIds={liveMarketIds} />
-              </div>
-            );
-          })}
+          {loading && displayedEvents.length === 0
+            ? Array.from({ length: 8 }).map((_, i) => (
+                <div key={`skel-${i}`} className="bg-bg">
+                  <div className="border border-border bg-surface p-5 h-full flex flex-col gap-3 animate-pulse">
+                    <div className="flex gap-2">
+                      <div className="h-4 w-16 bg-border" />
+                      <div className="h-4 w-12 bg-border/60" />
+                    </div>
+                    <div className="h-4 w-4/5 bg-border/80" />
+                    <div className="h-4 w-3/5 bg-border/50" />
+                    <div className="flex items-end justify-between gap-3 pt-2">
+                      <div className="h-8 w-16 bg-border" />
+                      <div className="flex gap-1.5">
+                        <div className="h-6 w-14 bg-border/60" />
+                        <div className="h-6 w-14 bg-border/60" />
+                      </div>
+                    </div>
+                    <div className="h-[2px] w-full bg-border" />
+                    <div className="flex items-center justify-between pt-1">
+                      <div className="h-3 w-16 bg-border/60" />
+                      <div className="h-3 w-20 bg-border/40" />
+                    </div>
+                  </div>
+                </div>
+              ))
+            : displayedEvents.map((event, idx) => {
+                const shouldShimmer = idx < 2 || recentlyLiveEventIds.has(event.id);
+                return (
+                  <div key={event.id} className={`bg-bg ${shouldShimmer ? "shimmer-card" : ""}`}>
+                    <EventCard event={event} liveMarketIds={liveMarketIds} />
+                  </div>
+                );
+              })}
         </div>
         {!loading && displayedEvents.length === 0 && (
           <div className="mt-3 border border-border bg-surface/25 px-4 py-6 text-center">

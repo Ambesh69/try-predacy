@@ -9,6 +9,7 @@ import { Liveline } from "liveline";
 import WalletButton from "@/components/WalletButton";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
+const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 import PriceChart from "@/components/PriceChart";
 import OrderbookPanel from "@/components/OrderbookPanel";
 import PositionsPanel from "@/components/PositionsPanel";
@@ -229,17 +230,19 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
         const res = await fetch(`${relayerUrl}/batch-status?marketId=${selectedMarket.conditionId}`);
         if (res.ok) {
           const data = await res.json();
-          // active=false means market not yet started on relayer
-          if (data.active === false || !data.currentBatchId) {
+          // No active batch AND no settling batch — market idle
+          if (!data.currentBatchId && !data.settlingBatchId) {
             setBatchActive(false);
             return;
           }
           setBatchActive(true);
+          const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
+          const isSettling = !data.currentBatchId && data.settlingBatchId;
           setBatch((prev) => ({
             ...prev,
-            batchId: BigInt(data.currentBatchId),
+            batchId: BigInt(activeBatchId),
             commitmentCount: data.orderCount ?? 0,
-            status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
+            status: isSettling || data.processingBatch ? 1 : 0,
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
           }));
@@ -254,7 +257,42 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
   }, [selectedMarket]);
 
   if (eventLoading) {
-    return <div className="min-h-screen flex items-center justify-center"><div className="w-4 h-4 border border-muted/40 border-t-transparent rounded-full animate-spin" /></div>;
+    return (
+      <div className="min-h-screen flex flex-col">
+        {/* Header skeleton */}
+        <header className="border-b border-border px-6 py-3 flex items-center gap-3">
+          <div className="h-3 w-20 bg-border animate-pulse" />
+          <span className="text-border">|</span>
+          <div className="h-5 w-24 bg-border/80 animate-pulse" />
+        </header>
+        {/* Title skeleton */}
+        <div className="border-b border-border px-6 py-4 space-y-2">
+          <div className="flex gap-2">
+            <div className="h-4 w-20 bg-border/60 animate-pulse" />
+            <div className="h-4 w-24 bg-border/40 animate-pulse" />
+          </div>
+          <div className="h-6 w-2/3 bg-border animate-pulse" />
+          <div className="h-10 w-full bg-border/40 animate-pulse mt-2" />
+        </div>
+        {/* Body skeleton */}
+        <div className="flex-1 grid grid-cols-1 xl:grid-cols-[1fr_380px]">
+          <div className="border-r border-border p-6 space-y-3">
+            <div className="h-[330px] bg-surface/40 border border-border animate-pulse" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="h-12 bg-border/20 border border-border/40 animate-pulse" />
+              ))}
+            </div>
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="h-10 bg-border animate-pulse" />
+            <div className="h-10 bg-border/60 animate-pulse" />
+            <div className="h-32 bg-border/40 animate-pulse" />
+            <div className="h-12 bg-border animate-pulse" />
+          </div>
+        </div>
+      </div>
+    );
   }
   if (!event) {
     return <div className="min-h-screen flex flex-col items-center justify-center gap-4"><p className="text-muted text-sm">Event not found.</p><Link href="/" className="text-accent text-xs tracking-widest hover:underline">← MARKETS</Link></div>;
@@ -270,9 +308,9 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
   const selYesProb = Math.round(selYesPrice * 100);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="min-h-screen xl:h-screen flex flex-col xl:overflow-hidden">
       {/* Header */}
-      <header className="border-b border-border px-6 py-3 flex items-center justify-between">
+      <header className="border-b border-border px-4 md:px-6 py-3 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-4">
           <Link href="/" className="flex items-center gap-1.5 text-muted hover:text-text transition-colors text-[11px] tracking-widest uppercase">
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -284,6 +322,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
           <Link href="/" className="text-xl font-black tracking-tight text-text" style={{ fontFamily: "var(--font-display)" }}>PREDACY</Link>
         </div>
         <div className="flex items-center gap-3">
+          <HeaderBalance />
           <FaucetButton />
           <WalletButton />
         </div>

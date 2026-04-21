@@ -8,6 +8,7 @@ import { usePrivy } from "@privy-io/react-auth";
 import BatchTimer from "@/components/BatchTimer";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
+const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 import CommitmentFeed from "@/components/CommitmentFeed";
 import { OrderForm } from "@/components/OrderForm";
 import PriceChart from "@/components/PriceChart";
@@ -59,17 +60,19 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
         const res = await fetch(`${relayerUrl}/batch-status?marketId=${id}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.active === false || !data.currentBatchId) {
+          if (!data.currentBatchId && !data.settlingBatchId) {
             setBatchActive(false);
             return;
           }
           setBatchStatus(data);
           setBatchActive(true);
+          const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
+          const isSettling = !data.currentBatchId && data.settlingBatchId;
           setBatch((prev) => ({
             ...prev,
-            batchId: BigInt(data.currentBatchId),
+            batchId: BigInt(activeBatchId),
             commitmentCount: data.orderCount ?? prev.commitmentCount,
-            status: data.processingBatch ? 1 : (data.settlingBatchId ? 1 : 0),
+            status: isSettling || data.processingBatch ? 1 : 0,
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
           }));
@@ -104,8 +107,33 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen flex flex-col">
+        <header className="border-b border-border px-4 md:px-6 py-3 flex items-center gap-3">
+          <div className="h-3 w-20 bg-border animate-pulse" />
+          <span className="text-border">|</span>
+          <div className="h-5 w-24 bg-border/80 animate-pulse" />
+        </header>
+        <div className="border-b border-border px-6 py-5 space-y-3">
+          <div className="h-4 w-24 bg-border/60 animate-pulse" />
+          <div className="h-5 w-2/3 bg-border animate-pulse" />
+        </div>
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] divide-x divide-border/90">
+          <div className="p-6 space-y-4">
+            <div className="w-[140px] h-[140px] mx-auto rounded-full bg-border/40 animate-pulse" />
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-3 bg-border/40 animate-pulse" />)}
+            </div>
+          </div>
+          <div className="p-6 space-y-3">
+            <div className="h-40 bg-border/30 border border-border animate-pulse" />
+            <div className="h-32 bg-border/20 border border-border animate-pulse" />
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="h-10 bg-border/60 animate-pulse" />
+            <div className="h-32 bg-border/40 animate-pulse" />
+            <div className="h-10 bg-border animate-pulse" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -117,7 +145,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="border-b border-border px-4 md:px-6 py-3 flex items-center gap-3 bg-surface/25 backdrop-blur-[2px]">
+      <header className="border-b border-border px-4 md:px-6 py-3 flex items-center gap-2 md:gap-3 flex-wrap bg-surface/25 backdrop-blur-[2px]">
         <Link href="/"
           className="text-muted hover:text-text transition-colors text-[11px] tracking-widest uppercase flex items-center gap-1.5">
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -129,6 +157,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
         <h1 className="text-lg font-black text-text tracking-tight leading-tight"
           style={{ fontFamily: "var(--font-display)" }}>PREDACY</h1>
         <div className="ml-auto flex items-center gap-3">
+          <HeaderBalance />
           <FaucetButton />
           <WalletButton compact />
         </div>
