@@ -126,6 +126,7 @@ app.get("/batch-status", (req, res) => {
     batchRunningUsd: state.batchRunningUsd.toString(),
     processingBatch: state.processingBatch,
     openedAt: state.batchOpenedAt,
+    settlingStartedAt: state.settlingStartedAt,
     commitments,
   });
 });

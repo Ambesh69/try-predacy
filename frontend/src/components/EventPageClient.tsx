@@ -191,7 +191,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
   const [leftTab, setLeftTab] = useState<"outcomes" | "orderbook">("outcomes");
   const [rightTab, setRightTab] = useState<"order" | "positions">("order");
   const [batchActive, setBatchActive] = useState(false);
-  const [batch, setBatch] = useState({ batchId: 0n, openedAt: Math.floor(Date.now() / 1000) - 8, batchWindow: 30, commitmentCount: 0, totalDeposited: 0n, status: 0, clearingPrice: 0n });
+  const [batch, setBatch] = useState({ batchId: 0n, openedAt: Math.floor(Date.now() / 1000) - 8, batchWindow: 30, commitmentCount: 0, totalDeposited: 0n, status: 0, clearingPrice: 0n, settlingStartedAt: 0 });
 
   // Fetch event data
   useEffect(() => {
@@ -245,6 +245,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
             status: isSettling || data.processingBatch ? 1 : 0,
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
+            settlingStartedAt: data.settlingStartedAt ?? 0,
           }));
         } else {
           setBatchActive(false);
@@ -469,6 +470,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
                     openedAt={batch.openedAt} batchWindow={batch.batchWindow}
                     commitmentCount={batch.commitmentCount} totalDeposited={batch.totalDeposited}
                     batchId={batch.batchId} status={batch.status} clearingPrice={batch.clearingPrice}
+                    settlingStartedAt={batch.settlingStartedAt}
                     mini
                   />
                 ) : (

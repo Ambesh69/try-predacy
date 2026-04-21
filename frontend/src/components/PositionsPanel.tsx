@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { clsx } from "clsx";
 import { getRelayerUrl } from "@/lib/relayerUrl";
+import { pushToast } from "@/components/Toast";
 
 interface StoredOrder {
   commitment: string;
@@ -109,12 +110,21 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
               clearInterval(poll);
               setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: true, msg: "Claimed!" } }));
               setClaimingBatch(null);
-              // Mark as claimed in localStorage
               markClaimed(order);
+              const isBuy = order.side === 0 || order.side === 2;
+              pushToast(
+                "success",
+                isBuy ? "Position claimed" : "USDC claimed",
+                isBuy
+                  ? `Tokens transferred for batch #${order.batchId}`
+                  : `${(Number(BigInt(order.amount)) / 1e6).toFixed(2)} USDC received`,
+              );
             } else if (status.status === "error") {
               clearInterval(poll);
-              setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: cleanError(status.error || "Claim failed") } }));
+              const errMsg = cleanError(status.error || "Claim failed");
+              setClaimResult((prev) => ({ ...prev, [order.batchId]: { ok: false, msg: errMsg } }));
               setClaimingBatch(null);
+              pushToast("error", "Claim failed", errMsg);
             }
           } catch {}
           if (attempts > 30) {
@@ -169,12 +179,40 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
 
   if (orders.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8">
-        <div className="w-8 h-8 border border-border flex items-center justify-center">
-          <div className="w-2 h-2 bg-muted/30" />
+      <div className="flex flex-col items-center justify-center gap-4 p-8 text-center">
+        {/* Icon */}
+        <div className="relative w-16 h-16">
+          <div className="absolute inset-0 border border-border rounded-full" />
+          <div className="absolute inset-2 border border-border/50 rounded-full" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <svg className="w-5 h-5 text-muted-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
         </div>
-        <span className="text-muted text-xs tracking-widest uppercase">No orders yet</span>
-        <span className="text-muted-dim text-[10px]">Place an order to see it here</span>
+
+        <div className="space-y-1">
+          <p className="text-text text-[12px] tracking-widest uppercase font-bold">No positions yet</p>
+          <p className="text-muted-dim text-[10px] max-w-[220px] leading-relaxed">
+            Sealed orders appear here after you place them. Each position can be claimed once the batch settles.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 w-full max-w-[200px] pt-2">
+          <div className="flex items-center gap-2 text-[10px] text-muted-dim">
+            <span className="w-1 h-1 rounded-full bg-accent/50 flex-shrink-0" />
+            <span>Submit a buy or sell order</span>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-muted-dim">
+            <span className="w-1 h-1 rounded-full bg-accent/50 flex-shrink-0" />
+            <span>Wait ~30s for batch to settle</span>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-muted-dim">
+            <span className="w-1 h-1 rounded-full bg-accent/50 flex-shrink-0" />
+            <span>Claim tokens or USDC payout</span>
+          </div>
+        </div>
       </div>
     );
   }

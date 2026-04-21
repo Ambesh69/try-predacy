@@ -50,6 +50,7 @@ export interface MarketState {
   batchRunningUsd: bigint;
   lastOrderSubmitAt: number;
   batchOpenedAt: number;      // unix seconds when current batch opened
+  settlingStartedAt: number;  // unix seconds when settling began (0 if not settling)
   orders: Map<string, Order>; // commitment hash → order
 }
 

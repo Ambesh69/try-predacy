@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import clsx from "clsx";
+import { pushToast } from "@/components/Toast";
 
 interface OrderFormProps {
   marketId: string;
@@ -13,6 +14,11 @@ interface OrderFormProps {
 
 const PRICE_DECIMALS = 1_000_000;
 const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL || "http://localhost:3001";
+
+function formatUsdcAmount(micro: string): string {
+  const n = Number(micro) / 1_000_000;
+  return n >= 1 ? `$${n.toFixed(2)}` : `${n.toFixed(2)} tokens`;
+}
 
 function cleanError(raw: string): string {
   if (raw.includes("insufficient funds")) return "Insufficient token balance for this order.";
@@ -109,6 +115,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         localStorage.setItem(`predacy:orders:${walletAddress}`, JSON.stringify(orders));
         setResult({ ok: true, message: `Order sealed in batch #${data.batchId}` });
         setAmount("");
+        pushToast("success", "Order sealed", `Batch #${data.batchId} • ${mode === "buy" ? "BUY" : "SELL"} ${side.toUpperCase()} ${formatUsdcAmount(amountMicro)}`);
         // Auto-clear success after 5s
         setTimeout(() => setResult(null), 5000);
       } else {
@@ -119,7 +126,25 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
     } finally {
       setSubmitting(false);
     }
-  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion]);
+  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side]);
+
+  // Keyboard shortcuts: Enter submits, Esc clears amount/result
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (e.key === "Enter" && !e.shiftKey && amountNum > 0 && !submitting) {
+        if (tag === "TEXTAREA") return;
+        e.preventDefault();
+        handleSubmit();
+      } else if (e.key === "Escape") {
+        setAmount("");
+        setResult(null);
+        (document.activeElement as HTMLElement)?.blur?.();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [amountNum, submitting, handleSubmit]);
 
   return (
     <div className="flex flex-col h-full">

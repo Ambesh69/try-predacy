@@ -25,6 +25,7 @@ const MOCK_BATCH = {
   totalDeposited: 0n,
   status: 0, // 0=OPEN, 1=SETTLING, 2=SETTLED
   clearingPrice: 0n,
+  settlingStartedAt: 0,
 };
 
 export function MarketPageClient({ params }: { params: Promise<{ id: string }> }) {
@@ -75,6 +76,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
             status: isSettling || data.processingBatch ? 1 : 0,
             totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
             openedAt: data.openedAt ?? prev.openedAt,
+            settlingStartedAt: data.settlingStartedAt ?? 0,
           }));
           // Update commitment feed
           if (data.commitments?.length) {
@@ -198,6 +200,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
               batchId={batch.batchId}
               status={batch.status}
               clearingPrice={batch.clearingPrice}
+              settlingStartedAt={batch.settlingStartedAt}
             />
           ) : (
             <div className="flex flex-col items-center gap-3">

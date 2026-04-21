@@ -14,6 +14,8 @@ interface BatchTimerProps {
   mini?: boolean;
   maxBatchUsd?: number;
   maxBatchOrders?: number;
+  settlingStartedAt?: number; // unix seconds when settling began
+  settlingEstimateSecs?: number; // expected settlement duration (default 12s)
 }
 
 const RADIUS        = 54;
@@ -26,10 +28,24 @@ export default function BatchTimer({
   openedAt, batchWindow, commitmentCount, totalDeposited,
   batchId, status, clearingPrice, mini = false,
   maxBatchUsd = 5000, maxBatchOrders = 50,
+  settlingStartedAt = 0, settlingEstimateSecs = 12,
 }: BatchTimerProps) {
   const [remaining, setRemaining] = useState(batchWindow);
   const [progress, setProgress]   = useState(1);
+  const [settleRemaining, setSettleRemaining] = useState(settlingEstimateSecs);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Settling countdown
+  useEffect(() => {
+    if (status !== 1 || !settlingStartedAt) return;
+    const tick = () => {
+      const elapsed = Math.floor(Date.now() / 1000) - settlingStartedAt;
+      setSettleRemaining(Math.max(0, settlingEstimateSecs - elapsed));
+    };
+    tick();
+    const iv = setInterval(tick, 500);
+    return () => clearInterval(iv);
+  }, [status, settlingStartedAt, settlingEstimateSecs]);
 
   useEffect(() => {
     const update = () => {
@@ -71,7 +87,10 @@ export default function BatchTimer({
       ? isIdle    ? "WAITING FOR ORDERS"
       : isUrgent  ? "CLOSING SOON"
       :             "ACCEPTING ORDERS"
-    : status === 1 ? "COMPUTING PRICE"
+    : status === 1
+      ? settlingStartedAt && settleRemaining > 0
+        ? `SETTLING ~${settleRemaining}s`
+        : "COMPUTING PRICE"
     : "POSITIONS CLAIMABLE";
 
   if (mini) {

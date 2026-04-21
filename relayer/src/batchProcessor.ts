@@ -62,6 +62,7 @@ export class BatchProcessor {
       batchRunningUsd: 0n,
       lastOrderSubmitAt: 0,
       batchOpenedAt: Math.floor(Date.now() / 1000),
+      settlingStartedAt: 0,
       orders: new Map(),
     };
 
@@ -145,6 +146,7 @@ export class BatchProcessor {
 
       state.settlingBatchId = batchIndex;
       state.currentBatchId = null;
+      state.settlingStartedAt = Math.floor(Date.now() / 1000);
 
       // Process the closed batch (async)
       this.processBatch(marketKey, batchIndex).catch(console.error);
