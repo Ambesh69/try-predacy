@@ -1,0 +1,78 @@
+// Copyright (c) dWallet Labs, Ltd.
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+
+// gRPC dWallet Signing Service — single SubmitTransaction RPC.
+// Request type is inside the BCS-serialized signed payload (DWalletRequest enum variant).
+
+syntax = "proto3";
+package ika.dwallet.v1;
+
+// ═══════════════════════════════════════════════════════════════════════
+// Service
+// ═══════════════════════════════════════════════════════════════════════
+
+service DWalletService {
+  // Submit any dWallet operation (DKG, sign, presign, etc.).
+  // The request type is encoded in the BCS-serialized SignedRequestData.request
+  // (DWalletRequest enum variant), which is covered by the user's signature.
+  rpc SubmitTransaction(UserSignedRequest) returns (TransactionResponse);
+
+  // Get all global presigns for a user.
+  rpc GetPresigns(GetPresignsRequest) returns (GetPresignsResponse);
+
+  // Get all dWallet-specific presigns for a user.
+  rpc GetPresignsForDWallet(GetPresignsForDWalletRequest) returns (GetPresignsResponse);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Authentication
+// ═══════════════════════════════════════════════════════════════════════
+
+// All mutation requests are wrapped in UserSignedRequest.
+// The UserSignature is self-contained: it carries both the signature bytes
+// and the public key bytes, with the variant determining the scheme
+// (Ed25519, Secp256k1, Secp256r1). Every validator independently verifies.
+message UserSignedRequest {
+  // BCS-serialized UserSignature enum (carries signature + public key + scheme).
+  // Variants: Ed25519 { signature, public_key }, Secp256k1 { ... }, Secp256r1 { ... }
+  bytes user_signature = 1;
+  // BCS-serialized SignedRequestData (the signed payload).
+  // Contains session_identifier_preimage, epoch, chain_id, intended_chain_sender,
+  // and the DWalletRequest enum variant that determines the operation.
+  bytes signed_request_data = 2;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Responses
+// ═══════════════════════════════════════════════════════════════════════
+
+// Response for SubmitTransaction — wraps BCS-serialized TransactionResponseData.
+message TransactionResponse {
+  // BCS-serialized TransactionResponseData enum (Signature, Attestation, Presign, or Error).
+  bytes response_data = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Presign query messages
+// ═══════════════════════════════════════════════════════════════════════
+
+message GetPresignsRequest {
+  bytes user_pubkey = 1;
+}
+
+message GetPresignsForDWalletRequest {
+  bytes user_pubkey = 1;
+  bytes dwallet_id = 2;
+}
+
+message GetPresignsResponse {
+  repeated PresignInfo presigns = 1;
+}
+
+message PresignInfo {
+  bytes presign_id = 1;
+  bytes dwallet_id = 2;
+  uint32 curve = 3;
+  uint32 signature_scheme = 4;
+  uint64 epoch = 5;
+}

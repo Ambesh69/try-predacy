@@ -11,6 +11,7 @@ import { ClaimJob, OrderSide, Order } from "./types";
 import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { getStreamer, GrpcEvent } from "./grpcStreamer";
 import { getLogStreamer, StreamEvent } from "./logStreamer";
+import { getIkaManager } from "./ika";
 
 const config = loadConfig();
 const client = new SolanaClient(config);
@@ -32,6 +33,11 @@ const grpcStreamer = getStreamer(config);
 if (config.rpcFastGrpcEnabled) {
   grpcStreamer.start().catch((err) => console.error("[grpcStreamer] Start failed:", err));
 }
+
+// Ika Pre-Alpha dWallet manager. Lazy-initialized on first request; noop
+// when IKA_ENABLED != "true". Architecture §4 — backend-delegated DKG so
+// users never see a Sui wallet or need to manage their own Ika shares.
+const ikaManager = getIkaManager(config, client.getConnection());
 
 // Claim job queue
 const claimJobs = new Map<string, ClaimJob>();
@@ -70,7 +76,43 @@ app.get("/health", (_req, res) => {
       available: true,
       ratePerMinute: FEE_RATE_LIMIT_PER_MIN,
     },
+    ika: ikaManager.getStoreSummary(),
   });
+});
+
+// ─── Ika dWallet ──────────────────────────────────────────────────────
+// Architecture §4 — backend-delegated Ika dWallets (A1). The relayer runs
+// DKG on the user's behalf, stores the attestation, and drives sign flows
+// when needed. Users never see Sui or need their own Ika onboarding.
+//
+// Pre-Alpha caveat: signing uses a single mock signer, not real 2PC-MPC.
+// Real MPC ships with Ika Alpha 1. Integration shape is correct either way.
+
+app.post("/ika/dwallet", async (req, res) => {
+  try {
+    const { userWallet, curve } = req.body;
+    if (!userWallet) return res.status(400).json({ error: "userWallet required" });
+    if (!ikaManager.enabled) return res.status(503).json({ error: "IKA_ENABLED=false on this relayer" });
+    const chosenCurve: "Curve25519" | "Secp256k1" = curve === "Secp256k1" ? "Secp256k1" : "Curve25519";
+    const record = await ikaManager.ensureDWallet(userWallet, chosenCurve);
+    res.json({ ok: true, dwallet: record });
+  } catch (err: any) {
+    console.error("[ika/dwallet] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/ika/presign", async (req, res) => {
+  try {
+    const { userWallet } = req.body;
+    if (!userWallet) return res.status(400).json({ error: "userWallet required" });
+    if (!ikaManager.enabled) return res.status(503).json({ error: "IKA_ENABLED=false on this relayer" });
+    const presignId = await ikaManager.requestPresign(userWallet);
+    res.json({ ok: true, presignId: Buffer.from(presignId).toString("hex") });
+  } catch (err: any) {
+    console.error("[ika/presign] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── SSE event stream (replaces polling) ───
