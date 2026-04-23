@@ -136,4 +136,26 @@ pub mod predacy {
     pub fn redeem_outcome(ctx: Context<RedeemOutcome>, amount: u64) -> Result<()> {
         instructions::redeem_outcome::handler(ctx, amount)
     }
+
+    /// Approve a message for Ika dWallet signing via CPI.
+    /// Creates a MessageApproval PDA; Ika's network then writes a signature
+    /// back into it. Used for cross-chain signing (Polygon/Polymarket).
+    /// See `approve_ika_message.rs` for full usage.
+    pub fn approve_ika_message(
+        ctx: Context<ApproveIkaMessage>,
+        message_digest: [u8; 32],
+        message_metadata_digest: [u8; 32],
+        user_pubkey: [u8; 32],
+        signature_scheme: u16,
+        message_approval_bump: u8,
+    ) -> Result<()> {
+        instructions::approve_ika_message::handler(
+            ctx,
+            message_digest,
+            message_metadata_digest,
+            user_pubkey,
+            signature_scheme,
+            message_approval_bump,
+        )
+    }
 }

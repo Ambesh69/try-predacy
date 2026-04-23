@@ -1428,6 +1428,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
+name = "ika-dwallet-anchor"
+version = "0.1.0"
+source = "git+https://github.com/dwallet-labs/ika-pre-alpha#3bd7945e012950e54fb4d0057b72a7d466556fc1"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1942,6 +1950,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "bytemuck",
+ "ika-dwallet-anchor",
  "litesvm",
  "solana-keypair",
  "solana-message",

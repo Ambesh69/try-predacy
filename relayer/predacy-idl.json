@@ -1,5 +1,5 @@
 {
-  "address": "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp",
+  "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY",
   "metadata": {
     "name": "predacy",
     "version": "0.1.0",
@@ -7,6 +7,149 @@
     "description": "Created with Anchor"
   },
   "instructions": [
+    {
+      "name": "approve_ika_message",
+      "docs": [
+        "Approve a message for Ika dWallet signing via CPI.",
+        "Creates a MessageApproval PDA; Ika's network then writes a signature",
+        "back into it. Used for cross-chain signing (Polygon/Polymarket).",
+        "See `approve_ika_message.rs` for full usage."
+      ],
+      "discriminator": [
+        236,
+        97,
+        25,
+        113,
+        54,
+        131,
+        72,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "ika_program",
+          "docs": [
+            "The Ika dWallet program. Identified by address to prevent confused-deputy",
+            "attacks — only the real Ika program can be invoked.",
+            "is invoked via CPI; no data reads from this account."
+          ],
+          "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY"
+        },
+        {
+          "name": "ika_coordinator",
+          "docs": [
+            "Ika's DWalletCoordinator PDA (seeds: [b\"dwallet_coordinator\"] in Ika's program).",
+            "Read-only — the Ika program reads the current epoch from it."
+          ]
+        },
+        {
+          "name": "message_approval",
+          "docs": [
+            "The MessageApproval PDA to create. Seeds are enforced by Ika's",
+            "approve_message validation on its end — we pass it as an unchecked",
+            "account writable. Ika will init it with status=Pending."
+          ],
+          "writable": true
+        },
+        {
+          "name": "dwallet",
+          "docs": [
+            "The dWallet account (created via DKG). Authority must be our CPI PDA."
+          ]
+        },
+        {
+          "name": "cpi_authority",
+          "docs": [
+            "Our program's CPI authority PDA. Ika's program verifies this is a",
+            "signer derived from our program's ID + the canonical seed."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  105,
+                  107,
+                  97,
+                  95,
+                  99,
+                  112,
+                  105,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "predacy_program",
+          "docs": [
+            "Our own program, required by Ika's CPI validation to prove the caller."
+          ],
+          "address": "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp"
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Pays rent for the newly-created MessageApproval PDA."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "message_digest",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "message_metadata_digest",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "user_pubkey",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "signature_scheme",
+          "type": "u16"
+        },
+        {
+          "name": "message_approval_bump",
+          "type": "u8"
+        }
+      ]
+    },
     {
       "name": "claim_position",
       "discriminator": [

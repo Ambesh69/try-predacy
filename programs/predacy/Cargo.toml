@@ -26,6 +26,10 @@ anchor-spl = { version = "1.0.0", features = ["token"] }
 solana-program = "3.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 
+# Ika Pre-Alpha CPI SDK — lets our program CPI-call approve_message on the
+# Ika dWallet program. See docs/ARCHITECTURE.md §4.
+ika-dwallet-anchor = { git = "https://github.com/dwallet-labs/ika-pre-alpha" }
+
 [dev-dependencies]
 litesvm = "0.10.0"
 solana-message = "3.0.1"
