@@ -350,7 +350,7 @@ Mode is per-batch (UI toggle) so users can choose based on event sensitivity. Al
 | Anonymous Privy / SIW default | **Done.** Login is wallet-only (SIWS); no email, social, or SMS options. Privy's only identifier is the Solana pubkey. |
 | In-memory ephemeral          | **Not yet.** Currently persisted to localStorage. Deferred to Phase 3 (Ika) — ephemeral will be re-derivable from MPC key. |
 | Privacy RPC default          | **Documented, user-configurable.** Fallback is `api.devnet.solana.com`. `.env.example` lists recommended providers for mainnet. |
-| RPC Fast integration         | **Scaffolded.** Config + gRPC streamer + SSE event endpoint in place. Activates when `RPC_FAST_API_KEY` is set; graceful fallback to polling otherwise. Frontend EventSource subscription pending. |
+| RPC Fast integration         | **Live on devnet, both HTTP + Yellowstone gRPC** (2026-04-23). Primary RPC via `sol-devnet-rpc.rpcfast.com` with X-Token auth; Yellowstone gRPC via `sol-devnet-yellowstone-grpc.rpcfast.com:443` (separate app / separate key) for sub-100ms program event streaming. SSE fanout to frontend. Frontend `useLiveEvents` hook ready to wire into BatchTimer + CommitmentFeed. |
 
 ---
 

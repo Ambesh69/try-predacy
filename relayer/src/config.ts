@@ -17,8 +17,10 @@ export interface Config {
   rpcFastWssUrl: string;
   rpcFastYellowstoneUrl: string;
   rpcFastEnabled: boolean;
-  // gRPC streaming is only available on Stream/Aperture plans.
-  // Hackathon plan uses WebSocket subscriptions instead.
+  // Yellowstone gRPC streaming. RPC Fast uses per-app keys, so the gRPC key
+  // differs from the HTTP key (they're separate apps in the dashboard).
+  // Available on Hackathon plan for devnet; sub-100ms latency vs WebSocket.
+  rpcFastGrpcApiKey?: string;
   rpcFastGrpcEnabled: boolean;
 }
 
@@ -38,10 +40,12 @@ export function loadConfig(): Config {
   const rpcFastApiKey = process.env.RPC_FAST_API_KEY || undefined;
   const rpcFastHttpUrl = process.env.RPC_FAST_HTTP_URL || "https://sol-devnet-rpc.rpcfast.com";
   const rpcFastWssUrl = process.env.RPC_FAST_WSS_URL || "wss://sol-devnet-rpc.rpcfast.com";
-  const rpcFastYellowstoneUrl = process.env.RPC_FAST_YELLOWSTONE_URL || "https://solana-yellowstone-grpc.rpcfast.com:443";
+  // Yellowstone gRPC defaults to devnet — override RPC_FAST_YELLOWSTONE_URL for mainnet.
+  const rpcFastYellowstoneUrl = process.env.RPC_FAST_YELLOWSTONE_URL || "https://sol-devnet-yellowstone-grpc.rpcfast.com:443";
+  const rpcFastGrpcApiKey = process.env.RPC_FAST_GRPC_API_KEY || undefined;
   const rpcFastEnabled = !!rpcFastApiKey;
-  // gRPC requires Stream plan ($249/mo) or higher. Opt-in only.
-  const rpcFastGrpcEnabled = rpcFastEnabled && process.env.RPC_FAST_GRPC_ENABLED === "true";
+  // gRPC is opt-in; requires its own key (separate RPC Fast app).
+  const rpcFastGrpcEnabled = !!rpcFastGrpcApiKey && process.env.RPC_FAST_GRPC_ENABLED === "true";
 
   // Primary RPC: RPC Fast if configured, else SOLANA_RPC_URL, else localhost
   const rpcUrl = rpcFastEnabled
@@ -102,6 +106,7 @@ export function loadConfig(): Config {
     rpcFastWssUrl,
     rpcFastYellowstoneUrl,
     rpcFastEnabled,
+    rpcFastGrpcApiKey,
     rpcFastGrpcEnabled,
   };
 }

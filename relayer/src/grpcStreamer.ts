@@ -35,7 +35,8 @@ export class GrpcStreamer extends EventEmitter {
   }
 
   get enabled(): boolean {
-    return this.config.rpcFastEnabled && !!this.config.rpcFastApiKey;
+    // gRPC uses its own key — a separate RPC Fast app from the HTTP RPC.
+    return this.config.rpcFastGrpcEnabled && !!this.config.rpcFastGrpcApiKey;
   }
 
   async start(): Promise<void> {
@@ -74,7 +75,7 @@ export class GrpcStreamer extends EventEmitter {
 
       this.client = new Client(
         this.config.rpcFastYellowstoneUrl,
-        this.config.rpcFastApiKey!,
+        this.config.rpcFastGrpcApiKey!,
         channelOptions,
       );
 
