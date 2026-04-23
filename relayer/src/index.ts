@@ -9,6 +9,8 @@ import { generateClaimProof, computeNullifier } from "./zkClaimProver";
 import { computeCommitment } from "./zkProver";
 import { ClaimJob, OrderSide, Order } from "./types";
 import { PublicKey } from "@solana/web3.js";
+import { getStreamer, GrpcEvent } from "./grpcStreamer";
+import { getLogStreamer, StreamEvent } from "./logStreamer";
 
 const config = loadConfig();
 const client = new SolanaClient(config);
@@ -18,8 +20,37 @@ const processor = new BatchProcessor(
   config.useRealZk,
 );
 
+// WebSocket-based log streamer — works on any RPC with WSS (RPC Fast Hackathon
+// plan, public RPC, etc.). Primary path for Predacy program event streaming.
+const logStreamer = getLogStreamer(client.getConnection(), config);
+logStreamer.start().catch((err) => console.error("[logStreamer] Start failed:", err));
+
+// Yellowstone gRPC streamer — optional upgrade path for RPC Fast Stream/Aperture
+// plans (sub-ms latency, richer filters). Only starts when RPC_FAST_GRPC_ENABLED=true.
+// When disabled (default), logStreamer handles everything.
+const grpcStreamer = getStreamer(config);
+if (config.rpcFastGrpcEnabled) {
+  grpcStreamer.start().catch((err) => console.error("[grpcStreamer] Start failed:", err));
+}
+
 // Claim job queue
 const claimJobs = new Map<string, ClaimJob>();
+
+// SSE subscriber registry — each connected frontend gets its own response object.
+// When events arrive (from either log or gRPC streamer), fan out to subscribers.
+const sseSubscribers = new Set<express.Response>();
+
+const fanOut = (event: StreamEvent | GrpcEvent) => {
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const res of sseSubscribers) {
+    try {
+      res.write(payload);
+    } catch { /* subscriber dropped; will be cleaned up on next close */ }
+  }
+};
+
+logStreamer.on("event", fanOut);
+grpcStreamer.on("event", fanOut);
 
 const app = express();
 app.use(cors());
@@ -32,6 +63,40 @@ app.get("/health", (_req, res) => {
     relayer: config.relayerKeypair.publicKey.toBase58(),
     programId: config.programId,
     useRealZk: config.useRealZk,
+    rpcFastEnabled: config.rpcFastEnabled,
+    logStreaming: true,
+    grpcStreaming: config.rpcFastGrpcEnabled && grpcStreamer.enabled,
+  });
+});
+
+// ─── SSE event stream (replaces polling) ───
+// Frontend subscribes via EventSource. When RPC Fast gRPC is active, pushes
+// on-chain events (commit_order, settle_batch, claim) in near-real time.
+// When gRPC is disabled, this endpoint stays open but emits no events —
+// frontend should fall back to /batch-status polling.
+app.get("/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
+  res.flushHeaders();
+
+  // Welcome event — lets client know which streaming mode is active.
+  res.write(`event: ready\ndata: ${JSON.stringify({
+    logStreaming: true,
+    grpcStreaming: config.rpcFastGrpcEnabled && grpcStreamer.enabled,
+  })}\n\n`);
+
+  sseSubscribers.add(res);
+
+  // Keep-alive ping every 30s so browsers don't time out the connection
+  const ping = setInterval(() => {
+    try { res.write(": ping\n\n"); } catch { /* dropped */ }
+  }, 30_000);
+
+  req.on("close", () => {
+    clearInterval(ping);
+    sseSubscribers.delete(res);
   });
 });
 

@@ -88,6 +88,10 @@ export async function getUmbraClient(walletStandard: any) {
   try {
     const sdk: any = await import("@umbra-privacy/sdk");
     const network = (process.env.NEXT_PUBLIC_UMBRA_NETWORK as any) || "devnet";
+    // Privacy-sensitive: RPC provider sees every lookup. Configure a no-log
+    // privacy RPC in NEXT_PUBLIC_SOLANA_RPC_URL for mainnet — see
+    // frontend/.env.example for recommended providers (Helius, Triton, Ankr).
+    // Devnet fallback below is public Solana RPC (not privacy-preserving).
     const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com";
     // Privy doesn't expose Solana wallet-standard interface directly.
     // For the hackathon devnet demo we degrade gracefully — the ephemeral

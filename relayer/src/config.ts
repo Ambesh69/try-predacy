@@ -4,16 +4,52 @@ import * as path from "path";
 
 export interface Config {
   solanaRpcUrl: string;
+  solanaWssUrl?: string;
   relayerKeypair: Keypair;
   programId: string;
   idlPath: string;
   circuitsPath: string;
   port: number;
   useRealZk: boolean;
+  // RPC Fast integration (optional — graceful fallback if unset)
+  rpcFastApiKey?: string;
+  rpcFastHttpUrl: string;
+  rpcFastWssUrl: string;
+  rpcFastYellowstoneUrl: string;
+  rpcFastEnabled: boolean;
+  // gRPC streaming is only available on Stream/Aperture plans.
+  // Hackathon plan uses WebSocket subscriptions instead.
+  rpcFastGrpcEnabled: boolean;
 }
 
 export function loadConfig(): Config {
-  const rpcUrl = process.env.SOLANA_RPC_URL || "http://127.0.0.1:8899";
+  // RPC Fast integration. If RPC_FAST_API_KEY is set, use their HTTP + WSS
+  // endpoints as primary. The specific URLs differ for devnet vs mainnet —
+  // the user should configure RPC_FAST_HTTP_URL + RPC_FAST_WSS_URL to match
+  // their app's network.
+  //
+  // Devnet (Hackathon plan):
+  //   RPC_FAST_HTTP_URL=https://sol-devnet-rpc.rpcfast.com
+  //   RPC_FAST_WSS_URL=wss://sol-devnet-rpc.rpcfast.com
+  //
+  // Mainnet:
+  //   RPC_FAST_HTTP_URL=https://solana-rpc.rpcfast.com/
+  //   RPC_FAST_WSS_URL=wss://solana-rpc.rpcfast.com/
+  const rpcFastApiKey = process.env.RPC_FAST_API_KEY || undefined;
+  const rpcFastHttpUrl = process.env.RPC_FAST_HTTP_URL || "https://sol-devnet-rpc.rpcfast.com";
+  const rpcFastWssUrl = process.env.RPC_FAST_WSS_URL || "wss://sol-devnet-rpc.rpcfast.com";
+  const rpcFastYellowstoneUrl = process.env.RPC_FAST_YELLOWSTONE_URL || "https://solana-yellowstone-grpc.rpcfast.com:443";
+  const rpcFastEnabled = !!rpcFastApiKey;
+  // gRPC requires Stream plan ($249/mo) or higher. Opt-in only.
+  const rpcFastGrpcEnabled = rpcFastEnabled && process.env.RPC_FAST_GRPC_ENABLED === "true";
+
+  // Primary RPC: RPC Fast if configured, else SOLANA_RPC_URL, else localhost
+  const rpcUrl = rpcFastEnabled
+    ? rpcFastHttpUrl
+    : (process.env.SOLANA_RPC_URL || "http://127.0.0.1:8899");
+  const wssUrl = rpcFastEnabled
+    ? rpcFastWssUrl
+    : (process.env.SOLANA_WSS_URL || undefined);
   const port = parseInt(process.env.PORT || "3001");
   const useRealZk = process.env.USE_REAL_ZK === "true";
 
@@ -54,11 +90,18 @@ export function loadConfig(): Config {
 
   return {
     solanaRpcUrl: rpcUrl,
+    solanaWssUrl: wssUrl,
     relayerKeypair,
     programId,
     idlPath,
     circuitsPath,
     port,
     useRealZk,
+    rpcFastApiKey,
+    rpcFastHttpUrl,
+    rpcFastWssUrl,
+    rpcFastYellowstoneUrl,
+    rpcFastEnabled,
+    rpcFastGrpcEnabled,
   };
 }
