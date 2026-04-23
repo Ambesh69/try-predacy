@@ -115,6 +115,38 @@ app.post("/ika/presign", async (req, res) => {
   }
 });
 
+// POST /ika/sign — request a signature from the user's dWallet.
+//   body: {
+//     userWallet:            string,              // which dWallet
+//     message:               base64,              // bytes to sign
+//     presignId:             hex,                 // from /ika/presign
+//     approvalTxSignature?:  base64,              // Solana tx that CPI'd approve_message
+//     approvalSlot?:         string | number,     // slot of that tx
+//   }
+// When approval params are omitted, placeholders are used — works on the
+// Pre-Alpha mock signer for demo; real Alpha 1 will require the real CPI.
+app.post("/ika/sign", async (req, res) => {
+  try {
+    const { userWallet, message, presignId, approvalTxSignature, approvalSlot } = req.body;
+    if (!userWallet || !message || !presignId) {
+      return res.status(400).json({ error: "userWallet, message, presignId required" });
+    }
+    if (!ikaManager.enabled) return res.status(503).json({ error: "IKA_ENABLED=false on this relayer" });
+
+    const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
+    const presignBytes = Uint8Array.from(Buffer.from(presignId, "hex"));
+    const slot = approvalSlot !== undefined ? BigInt(approvalSlot) : undefined;
+
+    const result = await ikaManager.signMessage(
+      userWallet, messageBytes, presignBytes, approvalTxSignature, slot,
+    );
+    res.json({ ok: true, signature: Buffer.from(result.signature).toString("hex") });
+  } catch (err: any) {
+    console.error("[ika/sign] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── SSE event stream (replaces polling) ───
 // Frontend subscribes via EventSource. When RPC Fast gRPC is active, pushes
 // on-chain events (commit_order, settle_batch, claim) in near-real time.

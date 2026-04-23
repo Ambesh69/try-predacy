@@ -563,6 +563,88 @@ export class IkaManager {
     return new Uint8Array(presignPayload.V1.presign_session_identifier);
   }
 
+  /**
+   * Sign an arbitrary message using the user's dWallet.
+   *
+   * Production usage requires `approvalTxSignature` + `approvalSlot` — the
+   * Solana tx where our Predacy program CPI-called `approve_message` on
+   * Ika's dWallet program to create the `MessageApproval` PDA. Without
+   * that, the Ika validator network (or its mock in Pre-Alpha) can refuse
+   * to sign. When those params are omitted, we pass all-zero placeholders
+   * — works on Pre-Alpha's mock signer, will NOT work in Alpha 1.
+   *
+   * The Todo #20 program-level CPI integration is what makes this fully
+   * production-ready. For the hackathon demo this endpoint lets us prove
+   * Sign works end-to-end on Pre-Alpha without blocking on the Rust changes.
+   */
+  async signMessage(
+    userWallet: string,
+    message: Uint8Array,
+    presignId: Uint8Array,
+    approvalTxSignature?: string,
+    approvalSlot?: bigint,
+  ): Promise<{ signature: Uint8Array }> {
+    const record = this.store[userWallet];
+    if (!record) throw new Error("No dWallet for user — call ensureDWallet first");
+    await this.init();
+
+    const payerKp = this.config.relayerKeypair;
+    const publicKeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
+    const txSigBytes = approvalTxSignature
+      ? Uint8Array.from(Buffer.from(approvalTxSignature, "base64"))
+      : new Uint8Array(64);
+
+    // Sign requires the REAL DKG attestation (unlike Presign which accepts
+    // placeholders). Parse the stored attestation and re-pack its fields
+    // explicitly as number[] so BCS re-serialization matches the canonical
+    // Rust encoding byte-for-byte.
+    const rawAttBytes = Uint8Array.from(Buffer.from(record.attestation, "base64"));
+    const parsedAtt = NetworkSignedAttestation.parse(rawAttBytes) as any;
+    const dwalletAttestation = {
+      attestation_data: Array.from(parsedAtt.attestation_data as number[]),
+      network_signature: Array.from(parsedAtt.network_signature as number[]),
+      network_pubkey: Array.from(parsedAtt.network_pubkey as number[]),
+      epoch: BigInt(parsedAtt.epoch),
+    };
+
+    const payload = SignedRequestData.serialize({
+      session_identifier_preimage: Array.from(publicKeyBytes.slice(0, 32)) as any,
+      epoch: 1n,
+      chain_id: { Solana: true } as any,
+      intended_chain_sender: Array.from(payerKp.publicKey.toBytes()),
+      request: {
+        Sign: {
+          message: Array.from(message),
+          message_metadata: [],
+          presign_session_identifier: Array.from(presignId),
+          message_centralized_signature: Array.from(new Uint8Array(64)),
+          dwallet_attestation: dwalletAttestation,
+          approval_proof: {
+            Solana: {
+              transaction_signature: Array.from(txSigBytes),
+              slot: approvalSlot ?? 0n,
+            },
+          },
+        },
+      } as any,
+    }).toBytes();
+
+    const userSig = UserSignature.serialize({
+      Ed25519: {
+        signature: Array.from(new Uint8Array(64)),
+        public_key: Array.from(payerKp.publicKey.toBytes()),
+      },
+    } as any).toBytes();
+
+    const responseBytes = await this.submitTransaction(userSig, payload);
+    const response = TransactionResponseData.parse(new Uint8Array(responseBytes)) as any;
+    if (response.Signature) {
+      return { signature: new Uint8Array(response.Signature.signature) };
+    }
+    if (response.Error) throw new Error(`Sign failed: ${response.Error.message}`);
+    throw new Error(`Unexpected sign response: ${JSON.stringify(response)}`);
+  }
+
   // ── Internal: gRPC call wrapper ───────────────────────────────────
 
   private submitTransaction(
