@@ -137,7 +137,13 @@ const SignDuringDKGRequest = bcs.struct("SignDuringDKGRequest", {
   message_centralized_signature: bcs.vector(bcs.u8()),
 });
 
+// IMPORTANT: the variant ORDER here must match the canonical Rust definition
+// in `crates/ika-dwallet-types/src/lib.rs`, because BCS enum discriminators
+// are positional. If you add/remove variants, the server-side deserializer
+// will mis-route the payload. Mirrored exactly from the reference client in
+// dwallet-labs/ika-pre-alpha/chains/solana/examples/_shared/ika-setup.ts.
 const DWalletRequest = bcs.enum("DWalletRequest", {
+  // 0
   DKG: bcs.struct("DKG", {
     dwallet_network_encryption_public_key: bcs.vector(bcs.u8()),
     curve: DWalletCurve,
@@ -146,6 +152,7 @@ const DWalletRequest = bcs.enum("DWalletRequest", {
     user_public_output: bcs.vector(bcs.u8()),
     sign_during_dkg_request: bcs.option(SignDuringDKGRequest),
   }),
+  // 1
   Sign: bcs.struct("Sign", {
     message: bcs.vector(bcs.u8()),
     message_metadata: bcs.vector(bcs.u8()),
@@ -154,12 +161,72 @@ const DWalletRequest = bcs.enum("DWalletRequest", {
     dwallet_attestation: NetworkSignedAttestation,
     approval_proof: ApprovalProof,
   }),
+  // 2
+  ImportedKeySign: bcs.struct("ImportedKeySign", {
+    message: bcs.vector(bcs.u8()),
+    message_metadata: bcs.vector(bcs.u8()),
+    presign_session_identifier: bcs.vector(bcs.u8()),
+    message_centralized_signature: bcs.vector(bcs.u8()),
+    dwallet_attestation: NetworkSignedAttestation,
+    approval_proof: ApprovalProof,
+  }),
+  // 3
+  Presign: bcs.struct("Presign", {
+    dwallet_network_encryption_public_key: bcs.vector(bcs.u8()),
+    curve: DWalletCurve,
+    signature_algorithm: DWalletSignatureAlgorithm,
+  }),
+  // 4 — this is the one we actually use; was at index 2 in truncated enum before
   PresignForDWallet: bcs.struct("PresignForDWallet", {
     dwallet_network_encryption_public_key: bcs.vector(bcs.u8()),
     dwallet_public_key: bcs.vector(bcs.u8()),
     dwallet_attestation: NetworkSignedAttestation,
     curve: DWalletCurve,
     signature_algorithm: DWalletSignatureAlgorithm,
+  }),
+  // 5
+  ImportedKeyVerification: bcs.struct("ImportedKeyVerification", {
+    dwallet_network_encryption_public_key: bcs.vector(bcs.u8()),
+    curve: DWalletCurve,
+    centralized_party_message: bcs.vector(bcs.u8()),
+    user_secret_key_share: UserSecretKeyShare,
+    user_public_output: bcs.vector(bcs.u8()),
+  }),
+  // 6
+  ReEncryptShare: bcs.struct("ReEncryptShare", {
+    dwallet_network_encryption_public_key: bcs.vector(bcs.u8()),
+    dwallet_public_key: bcs.vector(bcs.u8()),
+    dwallet_attestation: NetworkSignedAttestation,
+    encrypted_centralized_secret_share_and_proof: bcs.vector(bcs.u8()),
+    encryption_key: bcs.vector(bcs.u8()),
+  }),
+  // 7
+  MakeSharePublic: bcs.struct("MakeSharePublic", {
+    dwallet_public_key: bcs.vector(bcs.u8()),
+    dwallet_attestation: NetworkSignedAttestation,
+    public_user_secret_key_share: bcs.vector(bcs.u8()),
+  }),
+  // 8
+  FutureSign: bcs.struct("FutureSign", {
+    dwallet_public_key: bcs.vector(bcs.u8()),
+    dwallet_attestation: NetworkSignedAttestation,
+    presign_session_identifier: bcs.vector(bcs.u8()),
+    message: bcs.vector(bcs.u8()),
+    message_metadata: bcs.vector(bcs.u8()),
+    message_centralized_signature: bcs.vector(bcs.u8()),
+    signature_scheme: DWalletSignatureScheme,
+  }),
+  // 9
+  SignWithPartialUserSig: bcs.struct("SignWithPartialUserSig", {
+    partial_user_signature_attestation: NetworkSignedAttestation,
+    dwallet_attestation: NetworkSignedAttestation,
+    approval_proof: ApprovalProof,
+  }),
+  // 10
+  ImportedKeySignWithPartialUserSig: bcs.struct("ImportedKeySignWithPartialUserSig", {
+    partial_user_signature_attestation: NetworkSignedAttestation,
+    dwallet_attestation: NetworkSignedAttestation,
+    approval_proof: ApprovalProof,
   }),
 });
 
@@ -458,20 +525,18 @@ export class IkaManager {
 
     const payerKp = this.config.relayerKeypair;
     const publicKeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
-    const attestation = NetworkSignedAttestation.parse(
-      Uint8Array.from(Buffer.from(record.attestation, "base64")),
-    ) as any;
 
+    // Use the `Presign` variant (enum index 3) for normally-DKG'd dWallets.
+    // `PresignForDWallet` (index 4) is specifically for imported-key dWallets,
+    // confirmed by Pre-Alpha's error message.
     const payload = SignedRequestData.serialize({
       session_identifier_preimage: Array.from(publicKeyBytes.slice(0, 32)) as any,
       epoch: 1n,
       chain_id: { Solana: true } as any,
       intended_chain_sender: Array.from(payerKp.publicKey.toBytes()),
       request: {
-        PresignForDWallet: {
+        Presign: {
           dwallet_network_encryption_public_key: Array.from(new Uint8Array(32)),
-          dwallet_public_key: Array.from(publicKeyBytes),
-          dwallet_attestation: attestation,
           curve: curveBcsTag(record.curve) as any,
           signature_algorithm:
             record.curve === "Curve25519"
