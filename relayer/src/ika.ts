@@ -323,12 +323,20 @@ export class IkaManager {
     });
     const protoDesc = grpc.loadPackageDefinition(packageDef) as any;
     const DWalletService = protoDesc.ika.dwallet.v1.DWalletService;
+    // Port 443 → TLS is expected. The Pre-Alpha example uses createInsecure()
+    // but that doesn't work against the public endpoint (it does for local
+    // tests against localhost). Default to SSL for public endpoints; allow
+    // override via IKA_GRPC_INSECURE=true for local dev.
+    const useInsecure = process.env.IKA_GRPC_INSECURE === "true";
+    const creds = useInsecure
+      ? grpc.credentials.createInsecure()
+      : grpc.credentials.createSsl();
     this.grpcClient = new DWalletService(
       this.grpcUrl.replace(/^https?:\/\//, ""),
-      grpc.credentials.createInsecure(),
+      creds,
     );
     this.initialized = true;
-    console.log(`[ika] Connected to ${this.grpcUrl}, Solana program ${this.ikaProgramId.toBase58()}`);
+    console.log(`[ika] Connected to ${this.grpcUrl} (${useInsecure ? "insecure" : "ssl"}), Solana program ${this.ikaProgramId.toBase58()}`);
   }
 
   /**

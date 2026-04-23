@@ -80,6 +80,9 @@ export class GrpcStreamer extends EventEmitter {
       );
 
       console.log(`[grpcStreamer] Connecting to ${this.config.rpcFastYellowstoneUrl}...`);
+      // Yellowstone client requires explicit connect() before subscribe().
+      // Missing this was the cause of "Client not connected" on first boot.
+      await this.client.connect();
       this.stream = await this.client.subscribe();
 
       // Subscribe to all transactions that reference the Predacy program.

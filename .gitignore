@@ -12,3 +12,6 @@ dist/
 .next/
 circuits/setup/*.ptau
 circuits/setup/*0000.zkey
+
+# Ika dWallet store (contains per-user dWallet attestations)
+ika-dwallets.json
