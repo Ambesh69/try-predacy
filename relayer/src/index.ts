@@ -8,7 +8,7 @@ import { BatchProcessor } from "./batchProcessor";
 import { generateClaimProof, computeNullifier } from "./zkClaimProver";
 import { computeCommitment } from "./zkProver";
 import { ClaimJob, OrderSide, Order } from "./types";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { getStreamer, GrpcEvent } from "./grpcStreamer";
 import { getLogStreamer, StreamEvent } from "./logStreamer";
 
@@ -66,6 +66,10 @@ app.get("/health", (_req, res) => {
     rpcFastEnabled: config.rpcFastEnabled,
     logStreaming: true,
     grpcStreaming: config.rpcFastGrpcEnabled && grpcStreamer.enabled,
+    feeSponsorship: {
+      available: true,
+      ratePerMinute: FEE_RATE_LIMIT_PER_MIN,
+    },
   });
 });
 
@@ -98,6 +102,114 @@ app.get("/events", (req, res) => {
     clearInterval(ping);
     sseSubscribers.delete(res);
   });
+});
+
+// ─── Fee Sponsorship ───
+// Relayer signs as fee payer for ephemeral-authored transactions, keeping
+// Alice's main wallet completely absent from Tx B. Architecture §7.
+//
+// Request: { transaction: base64, ephemeralPubkey: string }
+// The client builds the tx with ephemeral as signer, relayer as fee payer,
+// partially signs with the ephemeral key, then sends the serialized tx here.
+// We co-sign as fee payer and submit. Client gets the signature back.
+//
+// Anti-abuse:
+//   - Fee payer MUST be this relayer's pubkey (prevent arbitrary tx submission)
+//   - All instructions MUST target the Predacy program (no open relay)
+//   - Per-ephemeral rate limit (5 requests per 60 seconds)
+const FEE_RATE_LIMIT_PER_MIN = 5;
+const feeRateLimit = new Map<string, { count: number; resetAt: number }>();
+
+function checkFeeRateLimit(ephemeralPubkey: string): { ok: boolean; retryIn?: number } {
+  const now = Date.now();
+  const entry = feeRateLimit.get(ephemeralPubkey);
+  if (!entry || now >= entry.resetAt) {
+    feeRateLimit.set(ephemeralPubkey, { count: 1, resetAt: now + 60_000 });
+    return { ok: true };
+  }
+  if (entry.count >= FEE_RATE_LIMIT_PER_MIN) {
+    return { ok: false, retryIn: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  entry.count += 1;
+  return { ok: true };
+}
+
+app.post("/sponsor-fee", async (req, res) => {
+  try {
+    const { transaction: txBase64, ephemeralPubkey } = req.body;
+    if (!txBase64 || !ephemeralPubkey) {
+      return res.status(400).json({ error: "transaction and ephemeralPubkey required" });
+    }
+
+    // Rate limit per ephemeral
+    const rl = checkFeeRateLimit(ephemeralPubkey);
+    if (!rl.ok) {
+      return res.status(429).json({ error: `Rate limited, retry in ${rl.retryIn}s` });
+    }
+
+    // Deserialize — try legacy first, fall back to versioned
+    const txBuf = Buffer.from(txBase64, "base64");
+    let isVersioned = false;
+    let tx: Transaction | VersionedTransaction;
+    try {
+      tx = Transaction.from(txBuf);
+    } catch {
+      try {
+        tx = VersionedTransaction.deserialize(txBuf);
+        isVersioned = true;
+      } catch (e: any) {
+        return res.status(400).json({ error: `Could not deserialize transaction: ${e.message}` });
+      }
+    }
+
+    // Verify fee payer == relayer. If the client built it wrong or is trying
+    // to route arbitrary txs through us, reject.
+    const relayerPk = config.relayerKeypair.publicKey;
+    if (isVersioned) {
+      const vtx = tx as VersionedTransaction;
+      const payer = vtx.message.staticAccountKeys[0];
+      if (!payer.equals(relayerPk)) {
+        return res.status(400).json({ error: "Fee payer must be the relayer" });
+      }
+    } else {
+      const ltx = tx as Transaction;
+      if (!ltx.feePayer || !ltx.feePayer.equals(relayerPk)) {
+        return res.status(400).json({ error: "Fee payer must be the relayer" });
+      }
+    }
+
+    // Verify all instructions target the Predacy program. Prevents open relay.
+    const programPk = new PublicKey(config.programId);
+    const instructionProgramIds: PublicKey[] = isVersioned
+      ? (tx as VersionedTransaction).message.compiledInstructions.map((ix) =>
+          (tx as VersionedTransaction).message.staticAccountKeys[ix.programIdIndex],
+        )
+      : (tx as Transaction).instructions.map((ix) => ix.programId);
+    for (const pid of instructionProgramIds) {
+      if (!pid.equals(programPk)) {
+        return res.status(400).json({
+          error: `Only Predacy program instructions can be sponsored (saw ${pid.toBase58()})`,
+        });
+      }
+    }
+
+    // Co-sign as fee payer and submit
+    const connection = client.getConnection();
+    if (isVersioned) {
+      const vtx = tx as VersionedTransaction;
+      vtx.sign([config.relayerKeypair]);
+      const sig = await connection.sendTransaction(vtx, { skipPreflight: false });
+      return res.json({ ok: true, signature: sig });
+    } else {
+      const ltx = tx as Transaction;
+      ltx.partialSign(config.relayerKeypair);
+      const sig = await connection.sendRawTransaction(ltx.serialize(), { skipPreflight: false });
+      return res.json({ ok: true, signature: sig });
+    }
+  } catch (err: any) {
+    console.error("[sponsor-fee] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Submit Order ───

@@ -343,7 +343,7 @@ Mode is per-batch (UI toggle) so users can choose based on event sensitivity. Al
 | Polymarket CLOB routing      | **Not yet integrated.** Devnet uses internal matching as a stopgap.                            |
 | LP market for Polygon USDC   | **Not yet built.** Single relayer-funded LP mock for devnet demo.                              |
 | FHE batch clearing           | **Not yet integrated.** Strict mode defined in spec; Encrypt SDK wiring is pending.            |
-| Fee sponsorship              | **Not yet integrated.** Current flow pays fees from Alice's main wallet.                       |
+| Fee sponsorship              | **Backend ready.** `POST /sponsor-fee` endpoint live on the relayer — accepts ephemeral-signed txs, verifies fee payer + program, co-signs as fee payer, submits. Rate-limited to 5/min per ephemeral. Frontend helper `feeSponsor.ts` ready. Wired into order flow once Ika lands (Todo #8). |
 | Mix window enforcement       | **Done (UI).** 60s countdown enforced between shield (Tx A) and commit (Tx B). Configurable via `NEXT_PUBLIC_MIX_WINDOW_SECONDS` for dev. Esc cancels mid-mix. |
 | De-atomized order flow       | **Done (UX).** Explicit state machine: preparing → shielding → mixing → committing → success. Visual phase indicator + countdown matches doc §6.2. On-chain Tx B still pending Ika + fee sponsorship. |
 | Unwrap destination picker    | **Not yet in UI.** Claimed tokens still go to plain ATAs today, not shielded UTXOs.            |
