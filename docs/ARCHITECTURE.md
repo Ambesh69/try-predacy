@@ -344,7 +344,8 @@ Mode is per-batch (UI toggle) so users can choose based on event sensitivity. Al
 | LP market for Polygon USDC   | **Not yet built.** Single relayer-funded LP mock for devnet demo.                              |
 | FHE batch clearing           | **Not yet integrated.** Strict mode defined in spec; Encrypt SDK wiring is pending.            |
 | Fee sponsorship              | **Not yet integrated.** Current flow pays fees from Alice's main wallet.                       |
-| Mix window enforcement       | **Not yet added to UI.** Shield and order can happen back-to-back today.                       |
+| Mix window enforcement       | **Done (UI).** 60s countdown enforced between shield (Tx A) and commit (Tx B). Configurable via `NEXT_PUBLIC_MIX_WINDOW_SECONDS` for dev. Esc cancels mid-mix. |
+| De-atomized order flow       | **Done (UX).** Explicit state machine: preparing → shielding → mixing → committing → success. Visual phase indicator + countdown matches doc §6.2. On-chain Tx B still pending Ika + fee sponsorship. |
 | Unwrap destination picker    | **Not yet in UI.** Claimed tokens still go to plain ATAs today, not shielded UTXOs.            |
 | Anonymous Privy / SIW default | **Done.** Login is wallet-only (SIWS); no email, social, or SMS options. Privy's only identifier is the Solana pubkey. |
 | In-memory ephemeral          | **Not yet.** Currently persisted to localStorage. Deferred to Phase 3 (Ika) — ephemeral will be re-derivable from MPC key. |

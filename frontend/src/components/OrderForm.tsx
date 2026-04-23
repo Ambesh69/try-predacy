@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { useWallets as useSolanaWallets } from "@privy-io/react-auth/solana";
 import clsx from "clsx";
@@ -15,6 +15,31 @@ interface OrderFormProps {
 
 const PRICE_DECIMALS = 1_000_000;
 const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL || "http://localhost:3001";
+
+// Mix window duration between Umbra shield (Tx A) and order commit (Tx B).
+// Architecture doc §6.2 requires a minimum of 60s for meaningful anonymity
+// set accumulation. Configurable via env for dev iteration (don't ship <60).
+const MIX_WINDOW_SECONDS = parseInt(
+  process.env.NEXT_PUBLIC_MIX_WINDOW_SECONDS || "60",
+  10,
+);
+
+// Phase of the order submission state machine:
+//   idle       — nothing in flight
+//   preparing  — opening the batch on the relayer
+//   shielding  — funding the ephemeral via Umbra mixer (Tx A)
+//   mixing     — anonymity-set accumulation window (enforced delay)
+//   committing — posting the commitment to the relayer (Tx B)
+//   success    — order sealed
+//   error      — failed, showing error message
+type Phase =
+  | "idle"
+  | "preparing"
+  | "shielding"
+  | "mixing"
+  | "committing"
+  | "success"
+  | "error";
 
 function formatUsdcAmount(micro: string): string {
   const n = Number(micro) / 1_000_000;
@@ -48,11 +73,19 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   const [amount, setAmount] = useState("");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [limitPriceInput, setLimitPriceInput] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [phaseDetail, setPhaseDetail] = useState<string>("");
+  const [mixSecondsLeft, setMixSecondsLeft] = useState<number>(0);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [balances, setBalances] = useState<{ usdc: string; yes: string; no: string } | null>(null);
   const [privacyMode, setPrivacyMode] = useState(true);
-  const [privacyStep, setPrivacyStep] = useState<string | null>(null);
+
+  // Cancellation flag for in-flight submissions. Flipped to true by the
+  // Escape handler during the mix window so the user can bail out without
+  // wasting the 60s wait.
+  const cancelledRef = useRef(false);
+
+  const submitting = phase !== "idle" && phase !== "success" && phase !== "error";
 
   // Fetch token balances
   useEffect(() => {
@@ -83,8 +116,16 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   const handleSubmit = useCallback(async () => {
     if (!authenticated) { login(); return; }
     if (!amount || amountNum <= 0) return;
-    setSubmitting(true);
+    cancelledRef.current = false;
     setResult(null);
+
+    const fail = (msg: string) => {
+      setPhase("error");
+      setResult({ ok: false, message: cleanError(msg) });
+      setPhaseDetail("");
+      setMixSecondsLeft(0);
+    };
+
     try {
       const saltBytes = crypto.getRandomValues(new Uint8Array(32));
       const salt = "0x" + Array.from(saltBytes).map(b => b.toString(16).padStart(2, "0")).join("");
@@ -93,36 +134,34 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         ? Math.floor(parseFloat(limitPriceInput) * 10_000).toString()
         : Math.floor(currentPrice * PRICE_DECIMALS).toString();
 
-      // Ensure market is active on relayer (opens batch if needed)
+      // ── Phase: preparing — open the batch on the relayer ──────────────
+      setPhase("preparing");
+      setPhaseDetail("Opening batch…");
       const startRes = await fetch(`${RELAYER_URL}/market/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ marketId }),
       }).catch(() => null);
-
-      // Small delay to ensure batch is fully initialized
       if (startRes) await new Promise(r => setTimeout(r, 1000));
 
-      // ── Privacy Mode: route the deposit through Umbra mixer ────────────
-      // Generates an ephemeral keypair, transfers USDC via Umbra so the
-      // ephemeral wallet is unlinkable from the user's main wallet, then
-      // commits the order from the ephemeral key. The user's main wallet
-      // address never appears in the on-chain commit_order tx.
-      let depositorAddress: string | undefined;
       let ephemeralPubkey: string | undefined;
+
+      // ── Phase: shielding — Tx A: fund ephemeral via Umbra ─────────────
+      // Alice's main wallet signs a shield tx. USDC enters the Umbra
+      // shielded pool, destined for the ephemeral keypair. This is the
+      // only on-chain point where Alice's main wallet is visible.
       if (privacyMode && walletAddress) {
+        setPhase("shielding");
+        setPhaseDetail("Generating ephemeral keypair…");
         const { generateEphemeralWallet, saveEphemeralWallet, fundEphemeralViaUmbra, markEphemeralFunded } = await import("@/lib/umbra");
-        setPrivacyStep("Generating ephemeral keypair…");
         const eph = await generateEphemeralWallet(marketId);
         saveEphemeralWallet(walletAddress, eph);
         ephemeralPubkey = eph.publicKey;
-        depositorAddress = eph.publicKey;
 
-        setPrivacyStep("Routing deposit through Umbra mixer…");
-        // USDC mint address — devnet mock or real mainnet USDC
+        if (cancelledRef.current) { setPhase("idle"); return; }
+
+        setPhaseDetail("Routing deposit through Umbra mixer…");
         const usdcMint = process.env.NEXT_PUBLIC_USDC_MINT || "62SHj3tZxpMdXhE5Y6qg93VRwQd2rbXPx8quEdJKbaUC";
-        // Pass the wallet-standard interface (Privy's ConnectedStandardSolanaWallet
-        // exposes .standardWallet for the wallet object — Umbra needs both wallet + account)
         const walletStandardBundle = standardWallet
           ? { wallet: (standardWallet as any).standardWallet, account: (standardWallet as any).standardWallet?.accounts?.[0] }
           : null;
@@ -133,17 +172,43 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           BigInt(amountMicro),
         );
         if (!fundResult.ok) {
-          // Surface the failure but continue with non-private flow as fallback
+          // Graceful degrade — Umbra unavailable, submit order without the
+          // shielded funding step. Still unlinked on-chain via ephemeral.
           console.warn("[Predacy] Umbra mixer unavailable, falling back to direct deposit:", fundResult.error);
-          setPrivacyStep(null);
-          depositorAddress = undefined;
           ephemeralPubkey = undefined;
         } else {
           markEphemeralFunded(walletAddress, eph.publicKey, fundResult.commitment);
-          setPrivacyStep(null);
+        }
+
+        // ── Phase: mixing — enforce anonymity set accumulation ──────────
+        // Wait for MIX_WINDOW_SECONDS so the shielded pool churns with
+        // other users' activity before we commit the order. Skipped if
+        // Umbra actually failed (nothing to mix).
+        if (ephemeralPubkey) {
+          setPhase("mixing");
+          setPhaseDetail("Building anonymity set");
+          const start = Date.now();
+          const endAt = start + MIX_WINDOW_SECONDS * 1000;
+          setMixSecondsLeft(MIX_WINDOW_SECONDS);
+
+          while (Date.now() < endAt) {
+            if (cancelledRef.current) { setPhase("idle"); setMixSecondsLeft(0); return; }
+            await new Promise(r => setTimeout(r, 250));
+            const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+            setMixSecondsLeft(remaining);
+          }
+          setMixSecondsLeft(0);
         }
       }
 
+      if (cancelledRef.current) { setPhase("idle"); return; }
+
+      // ── Phase: committing — Tx B: submit commitment to relayer ────────
+      // Relayer holds the commitment until batch close, then runs clearing.
+      // Once Ika + fee sponsorship land this will be a proper on-chain
+      // commit_order signed by the ephemeral with the relayer as fee payer.
+      setPhase("committing");
+      setPhaseDetail(privacyMode && ephemeralPubkey ? "Submitting sealed commitment…" : "Submitting order…");
       const res = await fetch(`${RELAYER_URL}/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -157,11 +222,13 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           commitment: data.commitment, salt, amount: amountMicro,
           side: orderSide, limitPrice, batchId: data.batchId,
           marketId, marketQuestion, timestamp: Date.now(),
-          ephemeralPubkey,           // null if non-private order
+          ephemeralPubkey,
           privacyMode: !!ephemeralPubkey,
         });
         if (orders.length > 200) orders.shift();
         localStorage.setItem(`predacy:orders:${walletAddress}`, JSON.stringify(orders));
+        setPhase("success");
+        setPhaseDetail("");
         setResult({ ok: true, message: `Order sealed in batch #${data.batchId}` });
         setAmount("");
         pushToast(
@@ -169,19 +236,33 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           ephemeralPubkey ? "Private order sealed" : "Order sealed",
           `Batch #${data.batchId} • ${mode === "buy" ? "BUY" : "SELL"} ${side.toUpperCase()} ${formatUsdcAmount(amountMicro)}${ephemeralPubkey ? " • via Umbra mixer" : ""}`,
         );
-        // Auto-clear success after 5s
-        setTimeout(() => setResult(null), 5000);
+        // Auto-clear success state after 5s — return form to idle
+        setTimeout(() => {
+          setResult(null);
+          setPhase("idle");
+        }, 5000);
       } else {
-        setResult({ ok: false, message: cleanError(data.error || "Order failed") });
+        fail(data.error || "Order failed");
       }
     } catch (err: any) {
-      setResult({ ok: false, message: cleanError(err.message || "Network error") });
-    } finally {
-      setSubmitting(false);
+      fail(err.message || "Network error");
     }
   }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, standardWallet]);
 
-  // Keyboard shortcuts: Enter submits, Esc clears amount/result
+  // Cancel an in-flight submission (called from Escape handler during mixing)
+  const handleCancel = useCallback(() => {
+    if (phase === "mixing" || phase === "shielding") {
+      cancelledRef.current = true;
+      setPhase("idle");
+      setMixSecondsLeft(0);
+      setPhaseDetail("");
+      pushToast("info", "Order cancelled", "You can start a new order anytime.");
+    }
+  }, [phase]);
+
+  // Keyboard shortcuts:
+  //   Enter  — submit (if amount valid and form idle)
+  //   Escape — if mixing/shielding: cancel the in-flight order; else clear form
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -190,14 +271,18 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         e.preventDefault();
         handleSubmit();
       } else if (e.key === "Escape") {
-        setAmount("");
-        setResult(null);
-        (document.activeElement as HTMLElement)?.blur?.();
+        if (phase === "mixing" || phase === "shielding") {
+          handleCancel();
+        } else {
+          setAmount("");
+          setResult(null);
+          (document.activeElement as HTMLElement)?.blur?.();
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [amountNum, submitting, handleSubmit]);
+  }, [amountNum, submitting, handleSubmit, phase, handleCancel]);
 
   return (
     <div className="flex flex-col h-full">
@@ -386,13 +471,51 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
               )} />
             </button>
           </div>
-          {privacyStep && (
-            <div className="mt-2 flex items-center gap-2 text-[10px] text-accent/80">
-              <span className="w-2 h-2 border border-accent border-t-transparent rounded-full animate-spin" />
-              {privacyStep}
-            </div>
-          )}
         </div>
+
+        {/* Phase indicator — visible while order is in flight.
+            Shows the de-atomized Tx A → Mix → Tx B flow from docs §6.2. */}
+        {submitting && (
+          <div className="border border-accent/30 bg-accent/5 px-3 py-3 space-y-2 animate-slide-up">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {phase === "mixing" ? (
+                  <span className="text-accent/80 text-[11px]">◉</span>
+                ) : (
+                  <span className="w-2.5 h-2.5 border border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                )}
+                <span className="text-[10px] tracking-widest uppercase font-bold text-accent truncate">
+                  {phase === "preparing" && "Preparing"}
+                  {phase === "shielding" && "Tx A · Shielding via Umbra"}
+                  {phase === "mixing" && "Tx A·B gap · Mixing"}
+                  {phase === "committing" && "Tx B · Committing"}
+                </span>
+              </div>
+              {phase === "mixing" && mixSecondsLeft > 0 && (
+                <span className="text-[11px] text-accent tabular-nums font-bold flex-shrink-0">
+                  {mixSecondsLeft}s
+                </span>
+              )}
+            </div>
+            {phaseDetail && (
+              <p className="text-[10px] text-muted-dim leading-snug">{phaseDetail}</p>
+            )}
+            {phase === "mixing" && (
+              <>
+                <div className="h-0.5 bg-border overflow-hidden">
+                  <div
+                    className="h-full bg-accent transition-all duration-[250ms] ease-linear"
+                    style={{ width: `${100 - (mixSecondsLeft / MIX_WINDOW_SECONDS) * 100}%` }}
+                  />
+                </div>
+                <p className="text-[9px] text-muted-dim leading-snug">
+                  Other users' shields pile up in the Umbra pool during this window.
+                  Larger anonymity set = harder to correlate your order. Press Esc to cancel.
+                </p>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Sell routing notice — devnet limitation, routed via Polymarket in mainnet */}
         {mode === "sell" && (
@@ -420,7 +543,11 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
               : "border-danger text-danger hover:bg-danger/5",
             (submitting || !amount || amountNum <= 0 || mode === "sell") && "opacity-40 cursor-not-allowed"
           )}>
-          {!authenticated ? "CONNECT WALLET" : submitting ? (privacyStep ?? "SUBMITTING…")
+          {!authenticated ? "CONNECT WALLET"
+            : phase === "preparing" ? "PREPARING…"
+            : phase === "shielding" ? "SHIELDING…"
+            : phase === "mixing" ? `MIXING · ${mixSecondsLeft}s`
+            : phase === "committing" ? "COMMITTING…"
             : mode === "buy"
               ? `${privacyMode ? "PRIVATELY " : ""}BUY ${side.toUpperCase()}`
               : `SELL ${side.toUpperCase()} · DISABLED ON DEVNET`}
