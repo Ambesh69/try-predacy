@@ -394,20 +394,36 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           )}
         </div>
 
+        {/* Sell routing notice — devnet limitation, routed via Polymarket in mainnet */}
+        {mode === "sell" && (
+          <div className="border border-warning/40 bg-warning/5 px-3 py-2.5 space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-warning text-[10px]">◉</span>
+              <span className="text-[10px] tracking-widest uppercase font-bold text-warning">
+                Sell routing · coming soon
+              </span>
+            </div>
+            <p className="text-[10px] text-muted-dim leading-snug">
+              Sells route via Polymarket CLOB on mainnet launch. Disabled on devnet —
+              the current vault-based flow doesn't lock tokens correctly.
+            </p>
+          </div>
+        )}
+
         {/* Submit */}
         <button onClick={handleSubmit}
-          disabled={submitting || (!amount || amountNum <= 0)}
+          disabled={submitting || (!amount || amountNum <= 0) || mode === "sell"}
           className={clsx(
             "w-full py-3 text-[11px] tracking-widest uppercase font-bold transition-colors border",
             mode === "buy"
               ? "border-accent text-accent hover:bg-accent/5"
               : "border-danger text-danger hover:bg-danger/5",
-            (submitting || !amount || amountNum <= 0) && "opacity-40 cursor-not-allowed"
+            (submitting || !amount || amountNum <= 0 || mode === "sell") && "opacity-40 cursor-not-allowed"
           )}>
           {!authenticated ? "CONNECT WALLET" : submitting ? (privacyStep ?? "SUBMITTING…")
             : mode === "buy"
               ? `${privacyMode ? "PRIVATELY " : ""}BUY ${side.toUpperCase()}`
-              : `${privacyMode ? "PRIVATELY " : ""}SELL ${side.toUpperCase()}`}
+              : `SELL ${side.toUpperCase()} · DISABLED ON DEVNET`}
         </button>
 
         {/* Result toast */}

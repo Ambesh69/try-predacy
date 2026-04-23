@@ -20,6 +20,11 @@ export default function PrivyWrapper({ children }: { children: React.ReactNode }
       <PrivyProvider
         appId={appId}
         config={{
+          // Anonymous Sign-in-with-Solana only — no email, social, or SMS.
+          // Privy's only identifier for the user is the Solana public key.
+          // No PII is collected at login time; nothing to subpoena beyond
+          // what's already on-chain.
+          loginMethods: ["wallet"],
           appearance: {
             theme: "dark",
             accentColor: "#2CE8C6" as `#${string}`,
@@ -27,9 +32,11 @@ export default function PrivyWrapper({ children }: { children: React.ReactNode }
             walletChainType: "solana-only",
             walletList: ["phantom", "detected_solana_wallets"],
             landingHeader: "Connect to Predacy",
-            loginMessage: "Trade without trace.",
+            loginMessage: "Trade without trace. Anonymous wallet connect — no email, no tracking.",
           },
-          loginMethods: ["wallet"],
+          // No embedded wallets — users bring their own (Phantom / Backpack / etc).
+          // Embedded wallets would tie a server-side key to the user session,
+          // which we explicitly don't want for privacy.
           embeddedWallets: {
             solana: {
               createOnLogin: "off",
