@@ -115,6 +115,22 @@ app.post("/ika/presign", async (req, res) => {
   }
 });
 
+// POST /ika/transfer-authority — move dWallet authority from the DKG payer
+// (relayer keypair) to Predacy's CPI authority PDA. Required before the
+// Predacy program can approve_message on this dWallet. Idempotent.
+app.post("/ika/transfer-authority", async (req, res) => {
+  try {
+    const { userWallet } = req.body;
+    if (!userWallet) return res.status(400).json({ error: "userWallet required" });
+    if (!ikaManager.enabled) return res.status(503).json({ error: "IKA_ENABLED=false on this relayer" });
+    const record = await ikaManager.transferDWalletToPredacy(userWallet);
+    res.json({ ok: true, dwallet: record });
+  } catch (err: any) {
+    console.error("[ika/transfer-authority] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /ika/sign — request a signature from the user's dWallet.
 //   body: {
 //     userWallet:            string,              // which dWallet

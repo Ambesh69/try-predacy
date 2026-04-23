@@ -44,6 +44,8 @@ import { Config } from "./config";
 
 const SEED_DWALLET_COORDINATOR = Buffer.from("dwallet_coordinator");
 const SEED_DWALLET = Buffer.from("dwallet");
+const SEED_CPI_AUTHORITY = Buffer.from("__ika_cpi_authority");
+const IX_TRANSFER_OWNERSHIP = 24;
 const DISC_COORDINATOR = 1;
 const DISC_DWALLET = 2;
 const DISC_NEK = 3;
@@ -284,6 +286,11 @@ export interface UserDWalletRecord {
   curve: DWalletCurveName;
   attestation: string;        // base64 serialized NetworkSignedAttestation
   createdAt: number;
+  /** When true, dWallet authority has been transferred to Predacy's CPI PDA.
+   *  Needed before our program can approve_message on this dWallet. */
+  authorityTransferred?: boolean;
+  /** The Predacy CPI authority PDA that now owns this dWallet (base58). */
+  cpiAuthority?: string;
 }
 
 type Store = Record<string, UserDWalletRecord>;
@@ -561,6 +568,63 @@ export class IkaManager {
     ) as any;
     if (!presignPayload.V1) throw new Error(`unexpected presign payload`);
     return new Uint8Array(presignPayload.V1.presign_session_identifier);
+  }
+
+  /**
+   * Transfer a user's dWallet authority from the DKG payer (relayer keypair)
+   * to Predacy's CPI authority PDA. Idempotent — noops if already transferred.
+   *
+   * After this, our Predacy program (via `approve_ika_message`) can create
+   * `MessageApproval` PDAs on the dWallet, authorizing Ika to sign. Before
+   * this, the DKG payer is the authority and only they can approve messages.
+   *
+   * Requires the Predacy program (`config.programId`) to be deployed on the
+   * cluster — the CPI authority PDA is derived from it.
+   */
+  async transferDWalletToPredacy(userWallet: string): Promise<UserDWalletRecord> {
+    const record = this.store[userWallet];
+    if (!record) throw new Error("No dWallet for user — call ensureDWallet first");
+    if (record.authorityTransferred) return record;
+
+    const { SystemProgram, Transaction, TransactionInstruction } = await import("@solana/web3.js");
+    void SystemProgram; void Transaction; // tree-shake guard
+
+    const predacyProgramId = new PublicKey(this.config.programId);
+    const [cpiAuthority] = PublicKey.findProgramAddressSync(
+      [SEED_CPI_AUTHORITY],
+      predacyProgramId,
+    );
+    const dwalletPda = new PublicKey(record.dwalletPda);
+
+    // Build the transfer_ownership instruction manually (33 bytes: disc + new_authority)
+    const data = Buffer.alloc(33);
+    data.writeUInt8(IX_TRANSFER_OWNERSHIP, 0);
+    cpiAuthority.toBuffer().copy(data, 1);
+
+    const ix = new TransactionInstruction({
+      programId: this.ikaProgramId,
+      keys: [
+        { pubkey: this.config.relayerKeypair.publicKey, isSigner: true, isWritable: false },
+        { pubkey: dwalletPda, isSigner: false, isWritable: true },
+      ],
+      data,
+    });
+
+    const tx = new Transaction().add(ix);
+    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = this.config.relayerKeypair.publicKey;
+    tx.sign(this.config.relayerKeypair);
+
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    await this.connection.confirmTransaction(sig, "confirmed");
+
+    record.authorityTransferred = true;
+    record.cpiAuthority = cpiAuthority.toBase58();
+    this.store[userWallet] = record;
+    this.saveStore();
+    console.log(`[ika] dWallet authority transferred: ${record.dwalletPda.slice(0, 8)}… → Predacy CPI PDA ${cpiAuthority.toBase58().slice(0, 8)}… (tx: ${sig.slice(0, 8)}…)`);
+    return record;
   }
 
   /**
