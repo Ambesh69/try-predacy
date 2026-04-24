@@ -59,11 +59,21 @@ function formatPrice(price: string | bigint): string {
   return `${c.toFixed(1)}¢`;
 }
 
+interface MoveState {
+  open: boolean;
+  destMode: "fresh" | "custom";
+  dest: string;
+  status: { phase: "idle" | "preparing" | "submitting" | "done" | "error"; message: string } | null;
+  signature?: string;
+  freshDestination?: string;
+}
+
 export default function PositionsPanel({ walletAddress, marketId }: PositionsPanelProps) {
   const [orders, setOrders] = useState<StoredOrder[]>([]);
   const [claimingBatch, setClaimingBatch] = useState<string | null>(null);
   const [claimResult, setClaimResult] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [tab, setTab] = useState<"positions" | "activity">("positions");
+  const [moveState, setMoveState] = useState<Record<string, MoveState>>({});
 
   // Load orders from localStorage
   useEffect(() => {
@@ -202,6 +212,100 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
         !(o.batchId === order.batchId && o.commitment === order.commitment)
       ));
     } catch {}
+  };
+
+  // ── Move-to-address handlers ─────────────────────────────────────
+  const openMove = (order: StoredOrder) => {
+    setMoveState((prev) => ({
+      ...prev,
+      [order.batchId]: {
+        open: true,
+        destMode: "fresh",
+        dest: "",
+        status: null,
+      },
+    }));
+  };
+  const closeMove = (order: StoredOrder) => {
+    setMoveState((prev) => {
+      const next = { ...prev };
+      delete next[order.batchId];
+      return next;
+    });
+  };
+  const updateMove = (order: StoredOrder, patch: Partial<MoveState>) => {
+    setMoveState((prev) => ({
+      ...prev,
+      [order.batchId]: { ...(prev[order.batchId] ?? { open: true, destMode: "fresh", dest: "", status: null }), ...patch },
+    }));
+  };
+
+  const handleMove = async (order: StoredOrder) => {
+    if (!order.ephemeralPubkey) return;
+    const s = moveState[order.batchId];
+    if (!s) return;
+    const destination = s.destMode === "custom" ? s.dest.trim() : undefined;
+    if (s.destMode === "custom" && !destination) {
+      updateMove(order, { status: { phase: "error", message: "Enter a destination address" } });
+      return;
+    }
+
+    updateMove(order, { status: { phase: "preparing", message: "Resolving mint + balance…" } });
+
+    try {
+      const relayerUrl = getRelayerUrl() || undefined;
+
+      // Fetch mints to pick the right one based on order side (YES/NO buy)
+      const balRes = await fetch(`${relayerUrl}/balances?wallet=${order.ephemeralPubkey}&marketId=${order.marketId}`);
+      if (!balRes.ok) throw new Error("Couldn't read ephemeral balance");
+      const bal = await balRes.json();
+      const isYes = order.side === 0 || order.side === 1;
+      const mint = isYes ? bal.mints?.yes : bal.mints?.no;
+      if (!mint) throw new Error("Mint not returned by relayer");
+
+      updateMove(order, { status: { phase: "submitting", message: "Signing + submitting transfer…" } });
+
+      const { moveFromEphemeral } = await import("@/lib/umbra");
+      const result = await moveFromEphemeral({
+        userWallet: walletAddress,
+        ephemeralPubkey: order.ephemeralPubkey,
+        destination,
+        mint,
+        relayerUrl,
+      });
+
+      if (!result.ok) {
+        updateMove(order, {
+          status: {
+            phase: "error",
+            message: cleanError(result.error || "Move failed"),
+          },
+        });
+        pushToast("error", "Move failed", result.error || "Unknown");
+        return;
+      }
+
+      updateMove(order, {
+        status: {
+          phase: "done",
+          message: result.freshDestination
+            ? `Moved to fresh wallet ${result.freshDestination.slice(0, 8)}…`
+            : `Moved to ${destination!.slice(0, 8)}…`,
+        },
+        signature: result.signature,
+        freshDestination: result.freshDestination,
+      });
+      pushToast(
+        "success",
+        "Position moved",
+        result.freshDestination
+          ? `Tokens sent to fresh wallet ${result.freshDestination.slice(0, 8)}…${result.freshDestination.slice(-4)}`
+          : `Tokens sent to ${destination!.slice(0, 8)}…`,
+      );
+    } catch (err: any) {
+      updateMove(order, { status: { phase: "error", message: cleanError(err?.message || "Move failed") } });
+      pushToast("error", "Move failed", err?.message || "Unknown");
+    }
   };
 
   if (orders.length === 0) {
@@ -379,7 +483,7 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
                       the ephemeral pubkey, not the main wallet. Users who don't
                       see the funds in their main wallet need this context. */}
                   {isClaimed && order.privacyMode && order.ephemeralPubkey && (
-                    <div className="border border-blue/20 bg-blue/5 px-2 py-1.5 space-y-0.5">
+                    <div className="border border-blue/20 bg-blue/5 px-2 py-1.5 space-y-1.5">
                       <div className="flex items-center gap-1.5">
                         <span className="text-blue text-[10px]">🛡</span>
                         <span className="text-[9px] tracking-widest uppercase text-blue/80 font-bold">
@@ -387,10 +491,127 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
                         </span>
                       </div>
                       <p className="text-[9px] text-muted-dim leading-snug">
-                        Payout landed in ephemeral <span className="hash-text">
+                        Balance lives in ephemeral <span className="hash-text">
                           {order.ephemeralPubkey.slice(0, 6)}…{order.ephemeralPubkey.slice(-4)}
-                        </span>, not your main wallet. "Move to address" coming soon.
+                        </span>, not your main wallet.
                       </p>
+
+                      {/* Move-to-address inline form */}
+                      {(() => {
+                        const ms = moveState[order.batchId];
+                        const done = ms?.status?.phase === "done";
+
+                        if (!ms?.open && !done) {
+                          return (
+                            <button
+                              onClick={() => openMove(order)}
+                              className="w-full mt-0.5 py-1.5 text-[9px] tracking-widest uppercase font-bold border border-blue/40 text-blue hover:bg-blue/10 transition-colors"
+                            >
+                              Move to address →
+                            </button>
+                          );
+                        }
+
+                        if (done && ms) {
+                          return (
+                            <div className="space-y-1 pt-0.5">
+                              <p className="text-[9px] text-accent">✓ {ms.status!.message}</p>
+                              {ms.signature && (
+                                <a
+                                  href={`https://explorer.solana.com/tx/${ms.signature}?cluster=devnet`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[9px] text-blue/70 hover:text-blue hash-text break-all block"
+                                >
+                                  tx {ms.signature.slice(0, 10)}…{ms.signature.slice(-6)}
+                                </a>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        const submitting = ms?.status?.phase === "preparing" || ms?.status?.phase === "submitting";
+
+                        return (
+                          <div className="space-y-1.5 pt-1">
+                            <div className="flex gap-1 text-[9px] tracking-widest uppercase">
+                              <button
+                                onClick={() => updateMove(order, { destMode: "fresh" })}
+                                disabled={submitting}
+                                className={clsx(
+                                  "flex-1 py-1 border transition-colors",
+                                  ms?.destMode === "fresh"
+                                    ? "border-blue/60 text-blue bg-blue/10"
+                                    : "border-border text-muted hover:border-blue/40",
+                                )}
+                              >
+                                Fresh wallet
+                              </button>
+                              <button
+                                onClick={() => updateMove(order, { destMode: "custom" })}
+                                disabled={submitting}
+                                className={clsx(
+                                  "flex-1 py-1 border transition-colors",
+                                  ms?.destMode === "custom"
+                                    ? "border-blue/60 text-blue bg-blue/10"
+                                    : "border-border text-muted hover:border-blue/40",
+                                )}
+                              >
+                                Paste addr
+                              </button>
+                            </div>
+
+                            {ms?.destMode === "custom" && (
+                              <input
+                                type="text"
+                                value={ms?.dest ?? ""}
+                                onChange={(e) => updateMove(order, { dest: e.target.value })}
+                                disabled={submitting}
+                                placeholder="Solana address…"
+                                className="w-full bg-bg border border-border px-2 py-1 text-[10px] text-text font-mono focus:border-blue/60 transition-colors"
+                              />
+                            )}
+
+                            <p className="text-[9px] text-muted-dim leading-snug">
+                              {ms?.destMode === "fresh"
+                                ? "Generates a new keypair (privacy-max: destination has no prior activity)."
+                                : "Sends to the address you paste — destination becomes publicly linkable."}
+                            </p>
+
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => handleMove(order)}
+                                disabled={submitting}
+                                className={clsx(
+                                  "flex-1 py-1.5 text-[9px] tracking-widest uppercase font-bold border transition-colors",
+                                  submitting
+                                    ? "border-muted/30 text-muted"
+                                    : "border-blue/60 text-blue hover:bg-blue/10",
+                                )}
+                              >
+                                {submitting ? (
+                                  <span className="flex items-center justify-center gap-1">
+                                    <span className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" />
+                                    {ms?.status?.message}
+                                  </span>
+                                ) : "Confirm move"}
+                              </button>
+                              {!submitting && (
+                                <button
+                                  onClick={() => closeMove(order)}
+                                  className="py-1.5 px-2 text-[9px] tracking-widest uppercase border border-border text-muted hover:text-text transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </div>
+
+                            {ms?.status?.phase === "error" && (
+                              <p className="text-[9px] text-danger leading-snug">{ms.status.message}</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>

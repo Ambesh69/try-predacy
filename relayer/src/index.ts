@@ -395,17 +395,26 @@ app.post("/sponsor-fee", async (req, res) => {
       }
     }
 
-    // Verify all instructions target the Predacy program. Prevents open relay.
+    // Verify all instructions target an allowed program. Prevents open relay.
+    // Allowed programs:
+    //   - Predacy (our program) — order commits, approve_ika_message, etc.
+    //   - SPL Token program — "Move to address" transfers from ephemeral ATAs
+    //   - SPL Associated Token — creating destination ATAs on demand
+    //   - System program — tiny SOL transfers (rent / exempt accounts)
     const programPk = new PublicKey(config.programId);
+    const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const ASSOCIATED_TOKEN_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+    const ALLOWED = [programPk, TOKEN_PROGRAM, ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM];
     const instructionProgramIds: PublicKey[] = isVersioned
       ? (tx as VersionedTransaction).message.compiledInstructions.map((ix) =>
           (tx as VersionedTransaction).message.staticAccountKeys[ix.programIdIndex],
         )
       : (tx as Transaction).instructions.map((ix) => ix.programId);
     for (const pid of instructionProgramIds) {
-      if (!pid.equals(programPk)) {
+      if (!ALLOWED.some((a) => a.equals(pid))) {
         return res.status(400).json({
-          error: `Only Predacy program instructions can be sponsored (saw ${pid.toBase58()})`,
+          error: `Instruction targets disallowed program (${pid.toBase58()}). Sponsor supports Predacy + SPL Token + Associated Token + System programs only.`,
         });
       }
     }
@@ -761,7 +770,18 @@ app.get("/balances", async (req, res) => {
       getBalance(noMint),
     ]);
 
-    res.json({ usdc, yes, no });
+    res.json({
+      usdc,
+      yes,
+      no,
+      // Mint addresses for clients that need to construct SPL transfers
+      // (e.g. "Move to address" from an ephemeral ATA).
+      mints: {
+        usdc: usdcMint.toBase58(),
+        yes: yesMint.toBase58(),
+        no: noMint.toBase58(),
+      },
+    });
   } catch (err: any) {
     console.error("[Balances] Error:", err.message);
     res.status(500).json({ error: err.message });

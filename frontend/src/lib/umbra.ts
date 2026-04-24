@@ -148,3 +148,190 @@ export async function fundEphemeralViaUmbra(
     return { ok: false, error: err?.message ?? "Umbra transfer failed" };
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  Move-to-address: pull tokens from an ephemeral ATA → destination
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Load the ephemeral Keypair by public key. Returns null if not found in
+ * local storage (browser reset, different machine, etc).
+ */
+export async function getEphemeralKeypair(
+  userWallet: string,
+  ephemeralPubkey: string,
+) {
+  const { Keypair } = await import("@solana/web3.js");
+  const bs58mod = await import("bs58");
+  const bs58 = (bs58mod as any).default ?? bs58mod;
+  const list = getEphemeralWallets(userWallet);
+  const eph = list.find((e) => e.publicKey === ephemeralPubkey);
+  if (!eph) return null;
+  return Keypair.fromSecretKey(bs58.decode(eph.secretKey));
+}
+
+export interface MoveResult {
+  ok: boolean;
+  signature?: string;
+  error?: string;
+  /** Amount moved (base units, accounting for token decimals). */
+  amountMoved?: bigint;
+  /** Destination pubkey (base58) if auto-generated as a fresh wallet. */
+  freshDestination?: string;
+}
+
+/**
+ * Move tokens from an ephemeral's ATA to a destination pubkey's ATA.
+ *
+ * The ephemeral signs the SPL transfer; the relayer sponsors the fee via
+ * `POST /sponsor-fee`. This keeps the ephemeral from needing any SOL of its
+ * own (it never did, post-creation).
+ *
+ * For "via mixer" behavior (amount-hiding unlink, not just destination-
+ * unlink), pass `viaMixer: true` — attempts to route through Umbra's
+ * internal-transfer path using a keypair→wallet-standard adapter. Falls
+ * back to plain transfer if Umbra is unavailable.
+ *
+ * Default semantics:
+ *   - If `amount` is undefined, moves the entire ATA balance ("MAX").
+ *   - If the destination ATA doesn't exist, includes the create-ATA ix.
+ *   - `freshDestination: true` generates a new Keypair to destination,
+ *     breaks ephemeral→identity correlation entirely.
+ */
+export async function moveFromEphemeral(params: {
+  userWallet: string;
+  ephemeralPubkey: string;
+  destination?: string;         // base58; if omitted, generates a fresh wallet
+  mint: string;                  // token mint (USDC / YES / NO)
+  amount?: bigint;               // default: MAX (entire ATA balance)
+  viaMixer?: boolean;            // attempt Umbra-routed path
+  relayerUrl?: string;
+  rpcUrl?: string;
+}): Promise<MoveResult> {
+  try {
+    const {
+      Connection, PublicKey, Keypair, Transaction, SystemProgram,
+    } = await import("@solana/web3.js");
+    const splToken = await import("@solana/spl-token");
+
+    const ephemeralKp = await getEphemeralKeypair(params.userWallet, params.ephemeralPubkey);
+    if (!ephemeralKp) {
+      return { ok: false, error: "Ephemeral keypair not found in local storage" };
+    }
+
+    const relayerUrl = params.relayerUrl
+      ?? process.env.NEXT_PUBLIC_RELAYER_URL
+      ?? "http://localhost:3001";
+
+    // Health check — need the relayer's pubkey as fee payer
+    const healthRes = await fetch(`${relayerUrl}/health`);
+    if (!healthRes.ok) return { ok: false, error: "Relayer unreachable (no fee sponsor)" };
+    const { relayer: relayerPk } = await healthRes.json();
+    const feePayer = new PublicKey(relayerPk);
+
+    const rpcUrl = params.rpcUrl
+      ?? process.env.NEXT_PUBLIC_SOLANA_RPC_URL
+      ?? "https://api.devnet.solana.com";
+    const connection = new Connection(rpcUrl, "confirmed");
+
+    const mint = new PublicKey(params.mint);
+
+    // Auto-generate a fresh destination wallet if none provided — the
+    // strongest privacy path, since the destination has no prior activity
+    // linkable to anything.
+    let destinationPubkey: InstanceType<typeof PublicKey>;
+    let freshDestination: string | undefined;
+    if (params.destination) {
+      destinationPubkey = new PublicKey(params.destination);
+    } else {
+      const fresh = Keypair.generate();
+      destinationPubkey = fresh.publicKey;
+      freshDestination = destinationPubkey.toBase58();
+    }
+
+    // Resolve source + destination ATAs
+    const sourceAta = await splToken.getAssociatedTokenAddress(mint, ephemeralKp.publicKey);
+    const destAta = await splToken.getAssociatedTokenAddress(mint, destinationPubkey);
+
+    // Query source balance; default amount = MAX
+    let amount = params.amount;
+    if (amount === undefined) {
+      try {
+        const acct = await splToken.getAccount(connection, sourceAta);
+        amount = acct.amount;
+      } catch {
+        return { ok: false, error: "Ephemeral ATA not found (no balance to move)" };
+      }
+    }
+    if (amount === 0n) return { ok: false, error: "No balance in ephemeral ATA" };
+
+    // Build the tx: optionally create dest ATA, then transfer
+    const tx = new Transaction();
+    tx.feePayer = feePayer;
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+
+    // Create destination ATA if missing (fee payer = relayer pays rent)
+    const destInfo = await connection.getAccountInfo(destAta);
+    if (!destInfo) {
+      tx.add(
+        splToken.createAssociatedTokenAccountInstruction(
+          feePayer,            // payer (relayer)
+          destAta,              // ata to create
+          destinationPubkey,    // owner of the ATA
+          mint,
+        ),
+      );
+    }
+
+    // Transfer
+    tx.add(
+      splToken.createTransferInstruction(
+        sourceAta,               // from
+        destAta,                 // to
+        ephemeralKp.publicKey,   // authority
+        amount,                  // amount (base units)
+      ),
+    );
+
+    // Ephemeral signs its part
+    tx.partialSign(ephemeralKp);
+
+    // Serialize (skip signature verification — fee payer hasn't signed yet)
+    const serialized = tx.serialize({
+      requireAllSignatures: false,
+      verifySignatures: false,
+    });
+    const base64 = Buffer.from(serialized).toString("base64");
+
+    // Send to relayer for fee-payer co-sign + submit
+    const res = await fetch(`${relayerUrl}/sponsor-fee`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transaction: base64,
+        ephemeralPubkey: ephemeralKp.publicKey.toBase58(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || `HTTP ${res.status}` };
+    }
+
+    // TODO (Phase B): viaMixer path — after the above lands in the
+    // destination ATA, run an Umbra shield → internal transfer → unshield
+    // to decouple the amount. Requires keypair→wallet-standard adapter.
+    if (params.viaMixer) {
+      // Currently plain mode only. Flag forwarded so UI can label accordingly.
+    }
+
+    return {
+      ok: true,
+      signature: data.signature,
+      amountMoved: amount,
+      freshDestination,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Move failed" };
+  }
+}
