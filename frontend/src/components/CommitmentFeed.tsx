@@ -14,6 +14,8 @@ interface CommitmentEntry {
 interface CommitmentFeedProps {
   entries: CommitmentEntry[];
   myAddress?: string;
+  /** true when RPC Fast Yellowstone gRPC is pushing program events live. */
+  streaming?: boolean;
 }
 
 const CRYPTO_CHARS = "0123456789abcdef";
@@ -98,7 +100,7 @@ function HashEntry({ entry, isMe }: { entry: CommitmentEntry; isMe: boolean }) {
   );
 }
 
-export default function CommitmentFeed({ entries, myAddress }: CommitmentFeedProps) {
+export default function CommitmentFeed({ entries, myAddress, streaming }: CommitmentFeedProps) {
   const feedRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -111,6 +113,14 @@ export default function CommitmentFeed({ entries, myAddress }: CommitmentFeedPro
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
           <span className="text-[11px] tracking-widest text-muted uppercase">Sealed Orders</span>
+          {streaming && (
+            <span
+              className="text-[9px] tracking-widest text-accent/80 uppercase font-bold bg-accent/10 border border-accent/30 px-1.5 py-0.5 rounded-sm"
+              title="RPC Fast Yellowstone gRPC — sub-100ms program event streaming"
+            >
+              live
+            </span>
+          )}
         </div>
         <span className="text-[11px] text-muted tabular-nums">{entries.length} committed</span>
       </div>

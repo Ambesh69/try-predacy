@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, use } from "react";
+import { useState, useEffect, useCallback, useMemo, use } from "react";
 import Link from "next/link";
 import { clsx } from "clsx";
 import dynamic from "next/dynamic";
@@ -18,6 +18,7 @@ import { OrderForm } from "@/components/OrderForm";
 import type { Market, PolyEvent } from "@/lib/polymarket";
 import { getRelayerUrl } from "@/lib/relayerUrl";
 import { filterAndDeduplicateMarkets, outcomeLabel, fmtPct, fmtCents } from "@/lib/marketUtils";
+import { useLiveEvents } from "@/lib/useLiveEvents";
 
 function formatVolume(vol: number | string): string {
   const n = typeof vol === "string" ? parseFloat(vol) : vol;
@@ -221,41 +222,47 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
       .finally(() => setEventLoading(false));
   }, [id]);
 
-  // Poll batch status
-  useEffect(() => {
+  // Fetch batch status — reusable for both polling and gRPC event subscribers.
+  const poll = useCallback(async () => {
     const relayerUrl = getRelayerUrl();
     if (!relayerUrl || !selectedMarket) return;
-    const poll = async () => {
-      try {
-        const res = await fetch(`${relayerUrl}/batch-status?marketId=${selectedMarket.conditionId}`);
-        if (res.ok) {
-          const data = await res.json();
-          // No active batch AND no settling batch — market idle
-          if (!data.currentBatchId && !data.settlingBatchId) {
-            setBatchActive(false);
-            return;
-          }
-          setBatchActive(true);
-          const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
-          const isSettling = !data.currentBatchId && data.settlingBatchId;
-          setBatch((prev) => ({
-            ...prev,
-            batchId: BigInt(activeBatchId),
-            commitmentCount: data.orderCount ?? 0,
-            status: isSettling || data.processingBatch ? 1 : 0,
-            totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
-            openedAt: data.openedAt ?? prev.openedAt,
-            settlingStartedAt: data.settlingStartedAt ?? 0,
-          }));
-        } else {
-          setBatchActive(false);
-        }
-      } catch {}
-    };
+    try {
+      const res = await fetch(`${relayerUrl}/batch-status?marketId=${selectedMarket.conditionId}`);
+      if (!res.ok) { setBatchActive(false); return; }
+      const data = await res.json();
+      if (!data.currentBatchId && !data.settlingBatchId) {
+        setBatchActive(false);
+        return;
+      }
+      setBatchActive(true);
+      const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
+      const isSettling = !data.currentBatchId && data.settlingBatchId;
+      setBatch((prev) => ({
+        ...prev,
+        batchId: BigInt(activeBatchId),
+        commitmentCount: data.orderCount ?? 0,
+        status: isSettling || data.processingBatch ? 1 : 0,
+        totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
+        openedAt: data.openedAt ?? prev.openedAt,
+        settlingStartedAt: data.settlingStartedAt ?? 0,
+      }));
+    } catch {}
+  }, [selectedMarket]);
+
+  // 5s fallback poll — always runs
+  useEffect(() => {
+    if (!selectedMarket) return;
     poll();
     const iv = setInterval(poll, 5000);
     return () => clearInterval(iv);
-  }, [selectedMarket]);
+  }, [selectedMarket, poll]);
+
+  // Live SSE — on any gRPC program event (commit/settle/claim), refetch
+  // immediately for sub-100ms UI updates when RPC Fast is streaming.
+  const { subscribe } = useLiveEvents();
+  useEffect(() => {
+    return subscribe("*", () => { poll(); });
+  }, [subscribe, poll]);
 
   if (eventLoading) {
     return (

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, useCallback, use } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { clsx } from "clsx";
 import { usePrivy } from "@privy-io/react-auth";
 import BatchTimer from "@/components/BatchTimer";
+import { useLiveEvents } from "@/lib/useLiveEvents";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
@@ -52,48 +53,55 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll batch status from relayer
-  useEffect(() => {
+  // Fetch batch status from the relayer — reusable for both the polling
+  // interval and the live gRPC event subscriber below.
+  const poll = useCallback(async () => {
     const relayerUrl = getRelayerUrl();
     if (!relayerUrl) return;
-    const poll = async () => {
-      try {
-        const res = await fetch(`${relayerUrl}/batch-status?marketId=${id}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (!data.currentBatchId && !data.settlingBatchId) {
-            setBatchActive(false);
-            return;
-          }
-          setBatchStatus(data);
-          setBatchActive(true);
-          const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
-          const isSettling = !data.currentBatchId && data.settlingBatchId;
-          setBatch((prev) => ({
-            ...prev,
-            batchId: BigInt(activeBatchId),
-            commitmentCount: data.orderCount ?? prev.commitmentCount,
-            status: isSettling || data.processingBatch ? 1 : 0,
-            totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
-            openedAt: data.openedAt ?? prev.openedAt,
-            settlingStartedAt: data.settlingStartedAt ?? 0,
-          }));
-          // Update commitment feed
-          if (data.commitments?.length) {
-            setCommitments(data.commitments.map((c: any) => ({
-              hash: c.hash as `0x${string}`,
-              timestamp: c.timestamp,
-            })));
-          }
-        } else {
-          setBatchActive(false);
-        }
-      } catch {}
-    };
+    try {
+      const res = await fetch(`${relayerUrl}/batch-status?marketId=${id}`);
+      if (!res.ok) { setBatchActive(false); return; }
+      const data = await res.json();
+      if (!data.currentBatchId && !data.settlingBatchId) {
+        setBatchActive(false);
+        return;
+      }
+      setBatchStatus(data);
+      setBatchActive(true);
+      const activeBatchId = data.currentBatchId ?? data.settlingBatchId;
+      const isSettling = !data.currentBatchId && data.settlingBatchId;
+      setBatch((prev) => ({
+        ...prev,
+        batchId: BigInt(activeBatchId),
+        commitmentCount: data.orderCount ?? prev.commitmentCount,
+        status: isSettling || data.processingBatch ? 1 : 0,
+        totalDeposited: data.batchRunningUsd ? BigInt(data.batchRunningUsd) : prev.totalDeposited,
+        openedAt: data.openedAt ?? prev.openedAt,
+        settlingStartedAt: data.settlingStartedAt ?? 0,
+      }));
+      if (data.commitments?.length) {
+        setCommitments(data.commitments.map((c: any) => ({
+          hash: c.hash as `0x${string}`,
+          timestamp: c.timestamp,
+        })));
+      }
+    } catch {}
+  }, [id]);
+
+  // Periodic fallback poll — runs every 5s even when gRPC is inactive
+  useEffect(() => {
     poll();
     const interval = setInterval(poll, 5000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [poll]);
+
+  // Live SSE subscription — when RPC Fast gRPC is streaming, we get sub-100ms
+  // notifications on every commit/settle/claim and trigger an immediate
+  // refetch so the UI reflects new commitments without the 5s poll lag.
+  const { subscribe, streaming } = useLiveEvents();
+  useEffect(() => {
+    return subscribe("*", () => { poll(); });
+  }, [subscribe, poll]);
 
   // Batch countdown
   useEffect(() => {
@@ -256,7 +264,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
             />
           )}
           <div className="flex-1 min-h-0">
-            <CommitmentFeed entries={commitments} />
+            <CommitmentFeed entries={commitments} streaming={streaming} />
           </div>
         </div>
 
