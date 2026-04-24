@@ -285,9 +285,14 @@ export interface UserDWalletRecord {
   publicKey: string;          // dWallet public key (hex)
   curve: DWalletCurveName;
   attestation: string;        // base64 serialized NetworkSignedAttestation
+  /**
+   * Session identifier (hex) from the V1 attestation returned by DKG. The
+   * Pre-Alpha mock signer indexes keys by this value — Presign + Sign must
+   * use it as their session_identifier_preimage to locate the signing key.
+   */
+  sessionIdentifier?: string;
   createdAt: number;
-  /** When true, dWallet authority has been transferred to Predacy's CPI PDA.
-   *  Needed before our program can approve_message on this dWallet. */
+  /** When true, dWallet authority has been transferred to Predacy's CPI PDA. */
   authorityTransferred?: boolean;
   /** The Predacy CPI authority PDA that now owns this dWallet (base58). */
   cpiAuthority?: string;
@@ -515,6 +520,11 @@ export class IkaManager {
       20_000,
     );
 
+    // Extract session_identifier from the V1 attestation. The Pre-Alpha mock
+    // signer indexes keys by this value; Presign/Sign must reuse it so the
+    // mock can find the signing key.
+    const sessionIdentifier = Buffer.from(payload.V1.session_identifier as number[]).toString("hex");
+
     const record: UserDWalletRecord = {
       userWallet,
       dwalletPda: dwalletPda.toBase58(),
@@ -523,6 +533,7 @@ export class IkaManager {
       attestation: Buffer.from(
         NetworkSignedAttestation.serialize(attestation).toBytes(),
       ).toString("base64"),
+      sessionIdentifier,
       createdAt: Date.now(),
     };
     this.store[userWallet] = record;
@@ -538,16 +549,21 @@ export class IkaManager {
   async requestPresign(userWallet: string): Promise<Uint8Array> {
     const record = this.store[userWallet];
     if (!record) throw new Error("No dWallet for user — call ensureDWallet first");
+    if (!record.sessionIdentifier) {
+      throw new Error("dWallet record missing sessionIdentifier — was it created with the old code? Re-run DKG.");
+    }
     await this.init();
 
     const payerKp = this.config.relayerKeypair;
-    const publicKeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
+    // sessionIdentifier MUST match the DKG's session_identifier so the mock
+    // signer can look up the signing key. Stored on the record at DKG time.
+    const sessionIdBytes = Uint8Array.from(Buffer.from(record.sessionIdentifier, "hex"));
 
     // Use the `Presign` variant (enum index 3) for normally-DKG'd dWallets.
     // `PresignForDWallet` (index 4) is specifically for imported-key dWallets,
     // confirmed by Pre-Alpha's error message.
     const payload = SignedRequestData.serialize({
-      session_identifier_preimage: Array.from(publicKeyBytes.slice(0, 32)) as any,
+      session_identifier_preimage: Array.from(sessionIdBytes) as any,
       epoch: 1n,
       chain_id: { Solana: true } as any,
       intended_chain_sender: Array.from(payerKp.publicKey.toBytes()),
@@ -660,18 +676,25 @@ export class IkaManager {
   ): Promise<{ signature: Uint8Array }> {
     const record = this.store[userWallet];
     if (!record) throw new Error("No dWallet for user — call ensureDWallet first");
+    if (!record.sessionIdentifier) {
+      throw new Error("dWallet record missing sessionIdentifier — was it created with the old code? Re-run DKG.");
+    }
     await this.init();
 
     const payerKp = this.config.relayerKeypair;
-    const publicKeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
+    // sessionIdentifier MUST match DKG's session_identifier (stored in the
+    // V1 attestation response) — the Pre-Alpha mock signer indexes keys by it.
+    const sessionIdBytes = Uint8Array.from(Buffer.from(record.sessionIdentifier, "hex"));
+    // Rust e2e passes the raw 64-byte signature (bs58-decoded from the tx sig
+    // string). Base64 decoding of a base58 string produces garbage — but
+    // Pre-Alpha mock doesn't validate approval_proof, so either works. We do
+    // it right for forward compatibility.
     const txSigBytes = approvalTxSignature
       ? Uint8Array.from(Buffer.from(approvalTxSignature, "base64"))
       : new Uint8Array(64);
 
-    // Sign requires the REAL DKG attestation (unlike Presign which accepts
-    // placeholders). Parse the stored attestation and re-pack its fields
-    // explicitly as number[] so BCS re-serialization matches the canonical
-    // Rust encoding byte-for-byte.
+    // Parse stored attestation and pass its fields back (number[] representations
+    // round-trip cleanly through BCS).
     const rawAttBytes = Uint8Array.from(Buffer.from(record.attestation, "base64"));
     const parsedAtt = NetworkSignedAttestation.parse(rawAttBytes) as any;
     const dwalletAttestation = {
@@ -682,7 +705,7 @@ export class IkaManager {
     };
 
     const payload = SignedRequestData.serialize({
-      session_identifier_preimage: Array.from(publicKeyBytes.slice(0, 32)) as any,
+      session_identifier_preimage: Array.from(sessionIdBytes) as any,
       epoch: 1n,
       chain_id: { Solana: true } as any,
       intended_chain_sender: Array.from(payerKp.publicKey.toBytes()),

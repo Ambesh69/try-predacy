@@ -283,11 +283,16 @@ async function main() {
   console.log("  Fund tx:", fundRes.sig);
 
   // ── 1. DKG ────────────────────────────────────────────────────────
-  console.log("\n[1/5] DKG via gRPC (session_id = ALL ZEROS, matching voting example)");
+  // KEY INSIGHT from Rust e2e: mock stores the signing key INDEXED BY the
+  // session_identifier from the DKG request. Must be a UNIQUE random 32-byte
+  // preimage (not all zeros), then re-used for Presign/Sign.
+  console.log("\n[1/5] DKG via gRPC (session_id = fresh random, per Rust e2e pattern)");
   const grpcClient = loadGrpcClient();
 
+  const dkgPreimage = Keypair.generate().publicKey.toBytes();
+
   const dkgPayload = SignedRequestData.serialize({
-    session_identifier_preimage: Array.from(new Uint8Array(32)) as any,  // ← all zeros
+    session_identifier_preimage: Array.from(dkgPreimage) as any,
     epoch: 1n,
     chain_id: { Solana: true } as any,
     intended_chain_sender: Array.from(payer.publicKey.toBytes()),
@@ -315,10 +320,14 @@ async function main() {
   const att = dkgParsed.Attestation;
   const attInner = VersionedDWalletDataAttestation.parse(new Uint8Array(att.attestation_data)) as any;
   const publicKey = new Uint8Array(attInner.V1.public_key);
+  // Extract the session_identifier from the V1 attestation — this is what the
+  // mock used to index the key. Reuse it for Presign + Sign.
+  const dwalletAddr = new Uint8Array(attInner.V1.session_identifier);
   const [dwalletPda] = PublicKey.findProgramAddressSync(dwalletPdaSeeds(CURVE_CURVE25519, publicKey), IKA_PROGRAM);
   await pollAccount(connection, dwalletPda, (d) => d.length > 2 && d[0] === DISC_DWALLET, 20_000);
-  console.log("  dWallet PDA:", dwalletPda.toBase58());
-  console.log("  pubkey:     ", Buffer.from(publicKey).toString("hex"));
+  console.log("  dWallet PDA:     ", dwalletPda.toBase58());
+  console.log("  pubkey:          ", Buffer.from(publicKey).toString("hex"));
+  console.log("  session_id:      ", Buffer.from(dwalletAddr).toString("hex"));
 
   // ── 2. Transfer authority to Predacy CPI PDA ─────────────────────
   console.log("\n[2/5] Transfer authority to Predacy CPI PDA");
@@ -376,9 +385,10 @@ async function main() {
   console.log("  MA PDA:    ", messageApprovalPda.toBase58());
 
   // ── 4. Presign ────────────────────────────────────────────────────
-  console.log("\n[4/5] Presign (session_id = payer pubkey, matching voting example)");
+  // session_id MUST match the DKG session_id so the mock can locate the key.
+  console.log("\n[4/5] Presign (session_id = dwallet_addr from DKG attestation)");
   const presignPayload = SignedRequestData.serialize({
-    session_identifier_preimage: Array.from(payer.publicKey.toBytes()) as any,  // ← payer pk (like voting example)
+    session_identifier_preimage: Array.from(dwalletAddr) as any,
     epoch: 1n,
     chain_id: { Solana: true } as any,
     intended_chain_sender: Array.from(payer.publicKey.toBytes()),
@@ -398,9 +408,14 @@ async function main() {
   console.log("  Presign ID:", Buffer.from(presignId).toString("hex"));
 
   // ── 5. Sign ───────────────────────────────────────────────────────
-  console.log("\n[5/5] Sign (the moment of truth)");
+  // Matches Rust e2e exactly:
+  //   - session_id = dwalletAddr (same as DKG's session_identifier)
+  //   - dwallet_attestation = original attestation from DKG response (not zero)
+  //   - transaction_signature = raw bytes (bs58-decoded), NOT base64
+  //   - slot = 0
+  console.log("\n[5/5] Sign (matching Rust e2e byte-for-byte)");
   const signPayload = SignedRequestData.serialize({
-    session_identifier_preimage: Array.from(payer.publicKey.toBytes()) as any,  // ← payer pk
+    session_identifier_preimage: Array.from(dwalletAddr) as any,
     epoch: 1n,
     chain_id: { Solana: true } as any,
     intended_chain_sender: Array.from(payer.publicKey.toBytes()),
@@ -419,7 +434,7 @@ async function main() {
         approval_proof: {
           Solana: {
             transaction_signature: Array.from(bs58.decode(approveSig)),
-            slot: BigInt(approveSlot),
+            slot: 0n,
           },
         } as any,
       },
