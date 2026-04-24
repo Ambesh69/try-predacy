@@ -131,6 +131,133 @@ app.post("/ika/transfer-authority", async (req, res) => {
   }
 });
 
+// POST /ika/approve-and-sign — complete end-to-end Sign flow in one call.
+//   1. Hash the message to produce a 32-byte digest.
+//   2. Derive MessageApproval PDA on Ika's program.
+//   3. Call predacy.approve_ika_message (CPI into Ika creates the PDA).
+//   4. Request a presign via Ika gRPC.
+//   5. Request Sign via Ika gRPC, passing the approve tx signature + slot.
+//   6. Return the final signature.
+//
+// Requires: the user's dWallet exists AND authority is transferred to Predacy
+// CPI PDA (call /ika/dwallet + /ika/transfer-authority first).
+//
+// body: { userWallet: string, message: base64 }
+// response: { ok: true, signature: hex, messageApprovalPda, approveTxSignature, approveSlot }
+app.post("/ika/approve-and-sign", async (req, res) => {
+  try {
+    const { userWallet, message } = req.body;
+    if (!userWallet || !message) {
+      return res.status(400).json({ error: "userWallet + message required" });
+    }
+    if (!ikaManager.enabled) return res.status(503).json({ error: "IKA_ENABLED=false on this relayer" });
+
+    const record = ikaManager.getDWallet(userWallet);
+    if (!record) return res.status(404).json({ error: "No dWallet for user — call /ika/dwallet first" });
+    if (!record.authorityTransferred) return res.status(400).json({ error: "Authority not transferred — call /ika/transfer-authority first" });
+
+    const { keccak_256 } = await import("@noble/hashes/sha3.js");
+    const bs58mod = await import("bs58");
+    const bs58 = (bs58mod as any).default ?? bs58mod;
+
+    const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
+    const pubkeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
+
+    // Pick curve + signature scheme. Despite the "EddsaSha512" name, Ika's
+    // Pre-Alpha server hashes messages with Keccak-256 for all schemes when
+    // computing the MessageApproval PDA. Verified empirically on devnet —
+    // using sha256 or sha512 produces a digest that the server doesn't match.
+    const curveByte = record.curve === "Curve25519" ? 2 : 0;
+    const sigScheme = record.curve === "Curve25519" ? 5 : 0; // 5=EddsaSha512, 0=EcdsaKeccak256
+    const digest = keccak_256(messageBytes);
+
+    // Derive MessageApproval PDA — seeds mirror findMessageApprovalPda in
+    // dwallet-labs/ika-pre-alpha's _shared/ika-setup.ts.
+    const ikaProgramId = ikaManager.getProgramId();
+    const payload = Buffer.alloc(2 + pubkeyBytes.length);
+    payload.writeUInt16LE(curveByte, 0);
+    Buffer.from(pubkeyBytes).copy(payload, 2);
+    const pubkeyChunks: Buffer[] = [];
+    for (let i = 0; i < payload.length; i += 32) {
+      pubkeyChunks.push(payload.subarray(i, Math.min(i + 32, payload.length)));
+    }
+    const schemeBuf = Buffer.alloc(2);
+    schemeBuf.writeUInt16LE(sigScheme, 0);
+    const maSeeds = [
+      Buffer.from("dwallet"),
+      ...pubkeyChunks,
+      Buffer.from("message_approval"),
+      schemeBuf,
+      Buffer.from(digest),
+    ];
+    const [messageApprovalPda, messageApprovalBump] = PublicKey.findProgramAddressSync(maSeeds, ikaProgramId);
+
+    // Derive Predacy CPI authority PDA and Ika coordinator PDA
+    const [cpiAuthority] = PublicKey.findProgramAddressSync(
+      [Buffer.from("__ika_cpi_authority")],
+      new PublicKey(config.programId),
+    );
+    const [coordinator] = PublicKey.findProgramAddressSync(
+      [Buffer.from("dwallet_coordinator")],
+      ikaProgramId,
+    );
+
+    // Call predacy.approve_ika_message via the Anchor client
+    const predacy = (client as any).program;
+    const txSig: string = await predacy.methods
+      .approveIkaMessage(
+        Array.from(digest),
+        Array.from(new Uint8Array(32)), // message_metadata_digest (empty)
+        Array.from(pubkeyBytes.slice(0, 32)), // user_pubkey (truncate Secp256k1 to 32)
+        sigScheme,
+        messageApprovalBump,
+      )
+      .accounts({
+        ikaProgram: ikaProgramId,
+        ikaCoordinator: coordinator,
+        messageApproval: messageApprovalPda,
+        dwallet: new PublicKey(record.dwalletPda),
+        cpiAuthority,
+        predacyProgram: new PublicKey(config.programId),
+        payer: config.relayerKeypair.publicKey,
+      })
+      .rpc();
+
+    // Confirm and get the slot
+    const conn = client.getConnection();
+    await conn.confirmTransaction(txSig, "confirmed");
+    const txInfo = await conn.getTransaction(txSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (!txInfo) throw new Error("approve tx not found after confirmation");
+    const slot = txInfo.slot;
+    const approveTxBytes = Buffer.from(bs58.decode(txSig));
+
+    // Allocate a presign
+    const presignId = await ikaManager.requestPresign(userWallet);
+
+    // Request Sign with the real approval proof
+    const result = await ikaManager.signMessage(
+      userWallet,
+      messageBytes,
+      presignId,
+      approveTxBytes.toString("base64"),
+      BigInt(slot),
+    );
+
+    res.json({
+      ok: true,
+      signature: Buffer.from(result.signature).toString("hex"),
+      messageApprovalPda: messageApprovalPda.toBase58(),
+      approveTxSignature: txSig,
+      approveSlot: slot,
+      sigScheme,
+      digest: Buffer.from(digest).toString("hex"),
+    });
+  } catch (err: any) {
+    console.error("[ika/approve-and-sign] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /ika/sign — request a signature from the user's dWallet.
 //   body: {
 //     userWallet:            string,              // which dWallet

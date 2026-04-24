@@ -381,6 +381,16 @@ export class IkaManager {
     };
   }
 
+  /** Fetch a user's dWallet record (or undefined). */
+  getDWallet(userWallet: string): UserDWalletRecord | undefined {
+    return this.store[userWallet];
+  }
+
+  /** Access to the Ika program ID for external PDA derivation. */
+  getProgramId(): PublicKey {
+    return this.ikaProgramId;
+  }
+
   async init(): Promise<void> {
     if (this.initialized) return;
     if (!this.enabled) {
