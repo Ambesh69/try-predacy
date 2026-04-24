@@ -85,6 +85,25 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
     setClaimResult((prev) => ({ ...prev, [order.batchId]: undefined as any }));
     try {
       const relayerUrl = getRelayerUrl();
+
+      // Privacy routing (architecture §5.4):
+      //   - If the order was placed via Umbra Privacy Mode, the ephemeral
+      //     keypair is the on-chain identity that should receive the payout.
+      //     Sending to the main wallet here would destroy the wallet-
+      //     unlinkability that the ephemeral bought us at commit time.
+      //   - The ephemeral's ATA is created on-demand by the relayer when
+      //     the claim_with_proof instruction runs, so the recipient just
+      //     needs to be the ephemeral pubkey (same format as a wallet addr).
+      //   - Non-privacy orders still go to main wallet as before.
+      //
+      // Follow-up (future): after payout lands in ephemeral ATA, shield it
+      // into an Umbra UTXO so amount + identity are BOTH hidden at rest.
+      // That requires signing a Solana tx from the ephemeral keypair —
+      // separate integration tracked alongside "Move to address".
+      const recipient = order.privacyMode && order.ephemeralPubkey
+        ? order.ephemeralPubkey
+        : walletAddress;
+
       const res = await fetch(`${relayerUrl}/claim-proof`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -95,7 +114,7 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
           amount: order.amount,
           limitPrice: order.limitPrice,
           salt: order.salt,
-          recipient: walletAddress,
+          recipient,
         }),
       });
       const data = await res.json();
@@ -114,12 +133,18 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
               setClaimingBatch(null);
               markClaimed(order);
               const isBuy = order.side === 0 || order.side === 2;
+              const toEphemeral = !!(order.privacyMode && order.ephemeralPubkey);
+              const destNote = toEphemeral
+                ? ` · held in ephemeral ${order.ephemeralPubkey!.slice(0, 6)}…${order.ephemeralPubkey!.slice(-4)}`
+                : "";
               pushToast(
                 "success",
-                isBuy ? "Position claimed" : "USDC claimed",
+                toEphemeral
+                  ? (isBuy ? "Position claimed privately" : "USDC claimed privately")
+                  : (isBuy ? "Position claimed" : "USDC claimed"),
                 isBuy
-                  ? `Tokens transferred for batch #${order.batchId}`
-                  : `${(Number(BigInt(order.amount)) / 1e6).toFixed(2)} USDC received`,
+                  ? `Tokens transferred for batch #${order.batchId}${destNote}`
+                  : `${(Number(BigInt(order.amount)) / 1e6).toFixed(2)} USDC received${destNote}`,
               );
             } else if (status.status === "error") {
               clearInterval(poll);
@@ -347,6 +372,25 @@ export default function PositionsPanel({ walletAddress, marketId }: PositionsPan
                       result.ok ? "text-accent" : "text-danger",
                     )}>
                       {result.msg}
+                    </div>
+                  )}
+
+                  {/* Private-claim destination note: privacy-mode payouts go to
+                      the ephemeral pubkey, not the main wallet. Users who don't
+                      see the funds in their main wallet need this context. */}
+                  {isClaimed && order.privacyMode && order.ephemeralPubkey && (
+                    <div className="border border-blue/20 bg-blue/5 px-2 py-1.5 space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-blue text-[10px]">🛡</span>
+                        <span className="text-[9px] tracking-widest uppercase text-blue/80 font-bold">
+                          held privately
+                        </span>
+                      </div>
+                      <p className="text-[9px] text-muted-dim leading-snug">
+                        Payout landed in ephemeral <span className="hash-text">
+                          {order.ephemeralPubkey.slice(0, 6)}…{order.ephemeralPubkey.slice(-4)}
+                        </span>, not your main wallet. "Move to address" coming soon.
+                      </p>
                     </div>
                   )}
                 </div>
