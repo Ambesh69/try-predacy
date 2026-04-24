@@ -87,7 +87,13 @@ export class GrpcStreamer extends EventEmitter {
 
       // Subscribe to all transactions that reference the Predacy program.
       // Yellowstone filters server-side, so we only receive relevant txs.
+      //
+      // IMPORTANT: every filter field must be present (even empty). The
+      // napi binding iterates over all of them and crashes with "Cannot
+      // convert undefined or null to object" if any key is missing.
       const request = {
+        accounts: {},
+        slots: {},
         transactions: {
           predacy: {
             vote: false,
@@ -97,8 +103,11 @@ export class GrpcStreamer extends EventEmitter {
             accountRequired: [],
           },
         },
-        slots: {},
-        accounts: {},
+        transactionsStatus: {},
+        blocks: {},
+        blocksMeta: {},
+        entry: {},
+        accountsDataSlice: [],
         commitment: CommitmentLevel.CONFIRMED,
       };
 
