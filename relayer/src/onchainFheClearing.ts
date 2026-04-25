@@ -26,10 +26,10 @@ import * as protoLoader from "@grpc/proto-loader";
 import * as fs from "fs";
 import * as path from "path";
 import type { Order } from "./types";
+import { ENCRYPT_GRPC_URL } from "./rpcConfig";
 
 const PROGRAM_ID = new PublicKey("59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn");
 const ENCRYPT_PROGRAM = new PublicKey("4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8");
-const ENCRYPT_GRPC_URL = "pre-alpha-dev-1.encrypt.ika-network.net:443";
 const NETWORK_KEY = Buffer.alloc(32, 0x55);
 const FHE_TYPE_UINT8 = 1;
 const FHE_TYPE_UINT64 = 4;
