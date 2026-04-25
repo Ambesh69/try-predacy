@@ -1,0 +1,41 @@
+# Don't ship anything we don't need into the Railway image.
+
+# Source dirs not needed at runtime
+target/                       # Solana program build artifacts
+programs/                     # Solana program source
+test-ledger/                  # Local test validator state (has named pipes — breaks Docker)
+tests/                        # Anchor integration tests
+docs/                         # Architecture docs
+.anchor/                      # Anchor IDE state
+
+# Frontend isn't deployed via this Dockerfile (Vercel handles it)
+frontend/
+
+# Node bloat
+**/node_modules/
+**/dist/
+**/.next/
+**/.turbo/
+
+# Trusted-setup ceremony artifacts (only needed during circuit-build, not runtime)
+circuits/setup/pot14_*.ptau
+circuits/setup/*_0000.zkey
+
+# Dev / IDE
+.git/
+.github/
+.claude/
+.vercel/
+.vscode/
+.idea/
+.DS_Store
+**/*.log
+
+# Env files (Railway provides envs at runtime)
+.env
+.env.local
+**/.env
+**/.env.local
+
+# Note: keep relayer/predacy-fhe-idl.json + relayer/proto/ — onchainFheClearing
+# needs both at runtime (Anchor IDL + gRPC proto for Encrypt CreateInput).
