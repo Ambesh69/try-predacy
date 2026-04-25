@@ -9,33 +9,11 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 // @ts-ignore
 import bs58 from "bs58";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 const ENCRYPT = new PublicKey("4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8");
-const RPC = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || "Mera4YdtfZgVWW3Nzkizi0LzY6wQb8PJrnUrjSvlNi3zbpdxm8tO7E6PAYSrggUH"}`;
-
-const opNames: Record<number, string> = {
-  0: "INITIALIZE",
-  1: "CREATE_INPUT",
-  2: "CREATE_PLAINTEXT",
-  3: "COMMIT_CIPHERTEXT", // ← executor writes results
-  4: "EXECUTE_GRAPH",      // ← user submits graph
-  5: "REGISTER_GRAPH",
-  6: "EXEC_REGISTERED",
-  7: "TRANSFER",
-  8: "COPY",
-  9: "CLOSE_CT",
-  10: "MAKE_PUBLIC",
-  11: "REQUEST_DECRYPT",   // ← user requests
-  12: "RESPOND_DECRYPT",   // ← decryptor responds
-  13: "CLOSE_DECRYPT_REQ",
-  14: "CREATE_DEPOSIT",
-  15: "TOP_UP",
-  16: "WITHDRAW",
-  228: "EMIT_EVENT",       // ← inner emit
-};
-
 async function main() {
-  const conn = new Connection(RPC);
+  const conn = new Connection(RPC_FAST_URL);
   console.log(`Probing ${ENCRYPT.toBase58()}…\n`);
 
   const sigs = await conn.getSignaturesForAddress(ENCRYPT, { limit: 100 });

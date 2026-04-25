@@ -28,12 +28,12 @@ import {
 } from "@solana/spl-token";
 import * as fs from "fs";
 import * as path from "path";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 const RELAYER_URL = "http://localhost:3001";
-const RPC_URL = "https://api.devnet.solana.com";
 // Use the HTTP+token URL for RPC calls so we don't rate-limit on the public
 // devnet endpoint — see relayer/.env for how the server uses the same.
-const RPC_FAST_URL = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || ""}`;
+|| ""}`;
 
 const MARKET_ID_HEX = "707265646163792d64656d6f2d76310000000000000000000000000000000000";
 const MARKET_ID_BUF = Buffer.from(MARKET_ID_HEX, "hex");

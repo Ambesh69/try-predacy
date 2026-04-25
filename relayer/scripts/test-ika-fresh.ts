@@ -29,14 +29,12 @@ import { bcs } from "@mysten/bcs";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 // bs58 has no types in this env — require dynamically
 const bs58: any = require("bs58");
 
 // ── Config ───────────────────────────────────────────────────────────
 
-const RPC_URL = process.env.RPC_FAST_API_KEY
-  ? `${process.env.RPC_FAST_HTTP_URL}/?api_key=${process.env.RPC_FAST_API_KEY}`
-  : "https://api.devnet.solana.com";
 const GRPC_URL = "pre-alpha-dev-1.ika.ika-network.net:443";
 const IKA_PROGRAM = new PublicKey("87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY");
 const PREDACY_PROGRAM = new PublicKey("Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp");
@@ -265,7 +263,7 @@ async function main() {
   const idlPath = path.resolve(__dirname, "..", "predacy-idl.json");
   const idl = JSON.parse(fs.readFileSync(idlPath, "utf-8"));
 
-  const connection = new Connection(RPC_URL, {
+  const connection = new Connection(RPC_FAST_URL, {
     commitment: "confirmed",
     httpHeaders: process.env.RPC_FAST_API_KEY ? { "X-Token": process.env.RPC_FAST_API_KEY } : undefined,
   });

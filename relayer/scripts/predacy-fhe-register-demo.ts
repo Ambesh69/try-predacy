@@ -19,10 +19,9 @@ import * as anchor from "@coral-xyz/anchor";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 const PROGRAM_ID = "59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn";
-const RPC_URL = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || "Mera4YdtfZgVWW3Nzkizi0LzY6wQb8PJrnUrjSvlNi3zbpdxm8tO7E6PAYSrggUH"}`;
-
 async function main() {
   console.log("\n╔════ predacy-fhe register_batch live demo ════╗\n");
 
@@ -30,7 +29,7 @@ async function main() {
   const payer = Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, "utf-8"))),
   );
-  const connection = new Connection(RPC_URL, "confirmed");
+  const connection = new Connection(RPC_FAST_URL, "confirmed");
   const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(payer), { commitment: "confirmed" });
 
   const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "predacy-fhe-idl.json"), "utf-8"));

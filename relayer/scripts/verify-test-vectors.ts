@@ -11,15 +11,14 @@ import * as anchor from "@coral-xyz/anchor";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
-
-const RPC_URL = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || "Mera4YdtfZgVWW3Nzkizi0LzY6wQb8PJrnUrjSvlNi3zbpdxm8tO7E6PAYSrggUH"}`;
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 async function main() {
   const keypairPath = path.join(process.env.HOME!, ".config/solana/id.json");
   const kp = Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, "utf-8"))),
   );
-  const connection = new Connection(RPC_URL, "confirmed");
+  const connection = new Connection(RPC_FAST_URL, "confirmed");
   const provider = new anchor.AnchorProvider(connection, new anchor.Wallet(kp), { commitment: "confirmed" });
 
   const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "predacy-idl.json"), "utf-8"));

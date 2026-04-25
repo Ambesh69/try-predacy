@@ -7,13 +7,10 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 // @ts-ignore
 import bs58 from "bs58";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 const ENCRYPT = new PublicKey("4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8");
 const PREDACY_FHE = new PublicKey("59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn");
-const RPC = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || "Mera4YdtfZgVWW3Nzkizi0LzY6wQb8PJrnUrjSvlNi3zbpdxm8tO7E6PAYSrggUH"}`;
-
-async function dumpExecuteGraph(conn: Connection, sig: string, label: string) {
-  const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
   if (!tx) { console.log(`${label}: tx not found`); return; }
   const keys = tx.transaction.message.staticAccountKeys;
   const encryptIdx = keys.findIndex(k => k.equals(ENCRYPT));
@@ -41,7 +38,7 @@ async function dumpExecuteGraph(conn: Connection, sig: string, label: string) {
 }
 
 async function main() {
-  const conn = new Connection(RPC);
+  const conn = new Connection(RPC_FAST_URL);
   const OUR_PAYER = new PublicKey("6u8hBsX94rFjg7iyrTGF2jyY4pqK4aLVVJRQMp77Ygch");
 
   // Scan recent txs to Encrypt program for execute_graph submissions

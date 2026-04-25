@@ -8,13 +8,10 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 // @ts-ignore
 import bs58 from "bs58";
+import { RPC_FAST_URL } from "../src/rpcConfig";
 
 const ENCRYPT = new PublicKey("4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8");
 const VAULT = new PublicKey("6DQ7zeNXRG3AtwNNPTrg9p44SfeB74hS49xcTZ9xRmhb");
-const RPC = `https://sol-devnet-rpc.rpcfast.com/?api_key=${process.env.RPC_FAST_API_KEY || "Mera4YdtfZgVWW3Nzkizi0LzY6wQb8PJrnUrjSvlNi3zbpdxm8tO7E6PAYSrggUH"}`;
-
-async function main() {
-  const conn = new Connection(RPC);
   const sigs = await conn.getSignaturesForAddress(VAULT, { limit: 30 });
 
   console.log(`Scanning ${sigs.length} recent vault txs for COMMIT_CIPHERTEXT…\n`);
