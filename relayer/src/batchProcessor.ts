@@ -4,10 +4,17 @@ import { computeClearingPrice } from "./clearingPrice";
 import {
   computeCommitment,
   computeCommitmentRoot,
+  computeBatchCommitmentRoot,
   generateBatchProof,
   generateMockProof,
 } from "./zkProver";
 import { buildMerkleTree } from "./zkClaimProver";
+import { computePairMatching, formatPairMatching, PairMatchingResult } from "./pairMatcher";
+import { routeResiduals, CLOBRoutingSummary } from "./polymarketRouter";
+import { planBundle, getBundleStore } from "./ikaOrchestrator";
+import { selectFheBackend } from "./fheBackend";
+import { encryptOrder, computeEncryptedClearing, candidatePricesFromPlaintext } from "./encryptedClearing";
+import { computeOnchainFheClearing, loadPredacyFheProgram } from "./onchainFheClearing";
 import {
   Order,
   OrderSide,
@@ -19,6 +26,69 @@ import {
 } from "./types";
 import { PublicKey } from "@solana/web3.js";
 
+/**
+ * Per-batch settlement metadata captured during processBatch. Surfaced via
+ * GET /settlement-stats so the UI can show the matched-pair / CLOB split.
+ */
+export interface BatchSettlementStats {
+  batchId: string;           // bigint.toString()
+  marketId: string;          // hex
+  settledAt: number;         // unix seconds
+  clearingPrice: string;     // 6-decimal as string (bigint)
+  filledYesBuyVol: string;
+  filledNoBuyVol: string;
+  filledYesSellQty: string;
+  filledNoSellQty: string;
+  pairMatching: {
+    matchedPairQty: string;
+    matchedPairUsdc: string;
+    matchedPercentBps: number;
+    residualYesBuyQty: string;
+    residualNoBuyQty: string;
+    residualYesSellQty: string;
+    residualNoSellQty: string;
+  };
+  /**
+   * Which privacy mode ran the clearing.
+   *   "fast"   — plaintext clearing (clearingPrice.ts)
+   *   "strict" — FHE clearing (encryptedClearing.ts); relayer never saw
+   *              per-order data in plaintext.
+   */
+  privacyMode: "fast" | "strict" | "onchain-fhe";
+  /**
+   * When privacyMode=strict, which FHE backend ran. On devnet this is
+   * "mock-encrypt-devnet" (transparent stub — see fheBackend.ts); real
+   * Encrypt REFHE swaps this to "refhe" with no algorithm changes.
+   */
+  fheBackend?: string;
+  /**
+   * HE op count during strict-mode clearing (0 in fast mode). High values
+   * indicate expensive comparison ops; useful for cost estimation.
+   */
+  fheOpCount?: number;
+  /** Strict-mode wall-clock ms spent running the FHE clearing circuit. */
+  fheElapsedMs?: number;
+  clobRouting: {
+    receiptCount: number;
+    totalUsdcToLp: string;
+    totalUsdcFromPolymarket: string;
+    source: "mock-devnet" | "polymarket-mainnet";
+    elapsedMs: number;
+  };
+  liquidityProvider: {
+    /** null when no buy-side residuals existed, or when no LP had capacity. */
+    lpId: string | null;
+    displayName: string | null;
+    /** USDC (6-dec) the LP put up for the batch's buy-side residuals. */
+    usdcAmount: string;
+    /** Fee earned by the LP, 6-dec USDC. */
+    feeUsdc: string;
+    feeBps: number;
+    /** True if buy-side residuals existed but no LP had capacity. */
+    unavailable: boolean;
+  };
+}
+
 export class BatchProcessor {
   private client: SolanaClient;
   private store: OrderStore;
@@ -26,17 +96,31 @@ export class BatchProcessor {
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private circuitsPath: string;
   private useRealZk: boolean;
+  private privacyMode: "fast" | "strict" | "onchain-fhe";
+  private fheBackendName: "mock";
+  /**
+   * batchId (as decimal string) → settlement metadata. Populated after
+   * processBatch completes; consumed by GET /settlement-stats. In-memory
+   * only — production would persist to Redis.
+   */
+  private settlementStats: Map<string, BatchSettlementStats> = new Map();
 
   constructor(
     client: SolanaClient,
     circuitsPath: string,
     useRealZk: boolean,
-    store?: OrderStore,
+    opts?: {
+      privacyMode?: "fast" | "strict" | "onchain-fhe";
+      fheBackend?: "mock";
+      store?: OrderStore;
+    },
   ) {
     this.client = client;
     this.circuitsPath = circuitsPath;
     this.useRealZk = useRealZk;
-    this.store = store || new InMemoryOrderStore();
+    this.privacyMode = opts?.privacyMode ?? "fast";
+    this.fheBackendName = opts?.fheBackend ?? "mock";
+    this.store = opts?.store || new InMemoryOrderStore();
   }
 
   // ─── Market Management ───
@@ -239,9 +323,110 @@ export class BatchProcessor {
         return;
       }
 
-      // 2. Compute clearing price
+      // 2. Compute clearing price. Two paths:
+      //    fast   → plaintext computeClearingPrice
+      //    strict → FHE clearing via encryptedClearing.ts (relayer never
+      //             sees per-order plaintext; only aggregate outputs get
+      //             decrypted). See fheBackend.ts + encryptedClearing.ts.
+      let fheStats: { backend: string; opCount: number; elapsedMs: number } | null = null;
       const result = computeClearingPrice(orderList);
-      console.log(`[BatchProcessor] Clearing price: ${result.clearingPrice} (${result.filledOrders.length} filled, ${result.unfilledOrders.length} unfilled)`);
+      if (this.privacyMode === "strict") {
+        const backend = selectFheBackend(this.fheBackendName);
+        const encOrders = orderList.map((o) => encryptOrder(backend, o));
+        const candidates = candidatePricesFromPlaintext(orderList);
+        const strictResult = computeEncryptedClearing(backend, encOrders, candidates);
+        console.log(
+          `[BatchProcessor] STRICT mode cleared: price=${strictResult.clearingPrice} ` +
+            `ops=${strictResult.opCount} elapsed=${strictResult.elapsedMs}ms ` +
+            `backend=${strictResult.backend}`,
+        );
+        // Consistency check: FHE path MUST match plaintext path (MockFHE
+        // is transparent, so any mismatch indicates an algorithm bug).
+        // With real REFHE this check gets skipped since we wouldn't
+        // have the plaintext to compare against.
+        if (
+          strictResult.clearingPrice !== result.clearingPrice ||
+          strictResult.filledYesBuyVol !== result.filledYesBuyVol ||
+          strictResult.filledNoBuyVol !== result.filledNoBuyVol ||
+          strictResult.filledYesSellQty !== result.filledYesSellQty ||
+          strictResult.filledNoSellQty !== result.filledNoSellQty
+        ) {
+          console.warn(
+            `[BatchProcessor] ⚠ Strict-mode result differs from plaintext ` +
+              `(strict=${strictResult.clearingPrice} vs plain=${result.clearingPrice}). ` +
+              `This is an algorithm bug in encryptedClearing.ts — using strict result.`,
+          );
+        }
+        // Adopt strict-mode results as source of truth.
+        result.clearingPrice = strictResult.clearingPrice;
+        result.filledYesBuyVol = strictResult.filledYesBuyVol;
+        result.filledNoBuyVol = strictResult.filledNoBuyVol;
+        result.filledYesSellQty = strictResult.filledYesSellQty;
+        result.filledNoSellQty = strictResult.filledNoSellQty;
+        fheStats = {
+          backend: strictResult.backend,
+          opCount: strictResult.opCount,
+          elapsedMs: strictResult.elapsedMs,
+        };
+      } else if (this.privacyMode === "onchain-fhe") {
+        // ── On-chain FHE clearing via predacy-fhe Anchor program ──
+        // Submits orders + clearing_price through Encrypt's gRPC + on-chain
+        // CPI, gets back 4 byte-correct decrypted aggregates. Plaintext
+        // path computes clearing price first (the FHE graph takes it as
+        // input — clearing-price discovery itself is plaintext).
+        try {
+          const provider = new (await import("@coral-xyz/anchor")).AnchorProvider(
+            this.client.getConnection(),
+            new (await import("@coral-xyz/anchor")).Wallet(this.client.relayer),
+            { commitment: "confirmed" },
+          );
+          const program = loadPredacyFheProgram(provider as any);
+          const onchainResult = await computeOnchainFheClearing(
+            this.client.getConnection(),
+            this.client.relayer,
+            program,
+            orderList,
+            result.clearingPrice,
+          );
+          console.log(
+            `[BatchProcessor] ONCHAIN-FHE cleared: tx=${onchainResult.settleTxSig.slice(0, 12)}… ` +
+              `executor=${onchainResult.executorLatencyMs}ms total=${onchainResult.totalElapsedMs}ms`,
+          );
+          // Cross-check FHE aggregates against plaintext (they must match —
+          // any deviation indicates a graph bug or a real Encrypt FHE issue).
+          if (
+            onchainResult.filledYesBuyVol !== result.filledYesBuyVol ||
+            onchainResult.filledNoBuyVol !== result.filledNoBuyVol ||
+            onchainResult.filledYesSellQty !== result.filledYesSellQty ||
+            onchainResult.filledNoSellQty !== result.filledNoSellQty
+          ) {
+            console.warn(
+              `[BatchProcessor] ⚠ On-chain FHE result differs from plaintext: ` +
+                `yb=${onchainResult.filledYesBuyVol}/${result.filledYesBuyVol} ` +
+                `nb=${onchainResult.filledNoBuyVol}/${result.filledNoBuyVol} ` +
+                `ys=${onchainResult.filledYesSellQty}/${result.filledYesSellQty} ` +
+                `ns=${onchainResult.filledNoSellQty}/${result.filledNoSellQty} ` +
+                `(taking FHE result as source of truth)`,
+            );
+          }
+          result.filledYesBuyVol = onchainResult.filledYesBuyVol;
+          result.filledNoBuyVol = onchainResult.filledNoBuyVol;
+          result.filledYesSellQty = onchainResult.filledYesSellQty;
+          result.filledNoSellQty = onchainResult.filledNoSellQty;
+          fheStats = {
+            backend: "onchain-encrypt-devnet",
+            opCount: 0, // on-chain graph emits ~70 ops; not tracked here
+            elapsedMs: onchainResult.totalElapsedMs,
+          };
+        } catch (err: any) {
+          console.error(
+            `[BatchProcessor] On-chain FHE clearing failed: ${err.message}. ` +
+              `Falling back to plaintext result.`,
+          );
+        }
+      } else {
+        console.log(`[BatchProcessor] Clearing price: ${result.clearingPrice} (${result.filledOrders.length} filled, ${result.unfilledOrders.length} unfilled)`);
+      }
 
       if (result.clearingPrice === 0n) {
         console.log(`[BatchProcessor] No crossing — clearing price is 0`);
@@ -299,6 +484,24 @@ export class BatchProcessor {
       const relayerYesAta = relayerYesAccount.address;
       const relayerNoAta = relayerNoAccount.address;
 
+      // 5a. Compute the Poseidon commitment_root that the batch circuit will
+      // output as its public input. settle_batch verifies the Groth16 proof
+      // against batch.commitment_root, so lockFunds must store exactly this
+      // value — keccak chains won't match (see circuit spec).
+      const commitmentRoot = await computeBatchCommitmentRoot(marketIdBigInt, commitments);
+      const commitmentRootBytes = bigintToBytes32(commitmentRoot);
+
+      // 5b. Classify filled volume into matched-pair (Path A: complete-set
+      // mint) vs residual (Path B: Polymarket CLOB). See pairMatcher.ts.
+      const pairMatching = computePairMatching(
+        result.clearingPrice,
+        result.filledYesBuyVol,
+        result.filledNoBuyVol,
+        result.filledYesSellQty,
+        result.filledNoSellQty,
+      );
+      console.log(`[BatchProcessor] Pair matching: ${formatPairMatching(pairMatching)}`);
+
       await this.client.lockFunds(
         state.marketId,
         batchIndex,
@@ -314,6 +517,7 @@ export class BatchProcessor {
         relayerUsdcAta,
         relayerYesAta,
         relayerNoAta,
+        Array.from(commitmentRootBytes),
       );
 
       // 6. (Placeholder) CLOB gap-fill would happen here
@@ -347,7 +551,9 @@ export class BatchProcessor {
         proofC = Array.from(mock.proofC);
       }
 
-      // 9. Phase 2: settleBatch
+      // 9. Phase 2: settleBatch. orderCount must match the value the
+      // prover used as the `orderCount` public input — currently
+      // `orderList.length` (unpadded count).
       await this.client.settleBatch(
         state.marketId,
         batchIndex,
@@ -358,9 +564,75 @@ export class BatchProcessor {
         relayerUsdcAta,
         relayerYesAta,
         relayerNoAta,
+        orderList.length,
       );
 
       console.log(`[BatchProcessor] Batch ${batchIndex} settled successfully`);
+
+      // 10. Mock Polymarket CLOB routing for residuals. On devnet this is
+      // metadata only — see polymarketRouter.ts. On mainnet this call becomes
+      // real Ika-orchestrated LP unlocks + Polymarket CLOB submissions.
+      const clobRouting = await routeResiduals(orderList, result.clearingPrice, pairMatching);
+
+      // 11. Record settlement stats for the /settlement-stats API.
+      const stats: BatchSettlementStats = {
+        batchId: batchIndex.toString(),
+        marketId: marketKey,
+        settledAt: Math.floor(Date.now() / 1000),
+        clearingPrice: result.clearingPrice.toString(),
+        filledYesBuyVol: result.filledYesBuyVol.toString(),
+        filledNoBuyVol: result.filledNoBuyVol.toString(),
+        filledYesSellQty: result.filledYesSellQty.toString(),
+        filledNoSellQty: result.filledNoSellQty.toString(),
+        privacyMode: this.privacyMode,
+        fheBackend: fheStats?.backend,
+        fheOpCount: fheStats?.opCount,
+        fheElapsedMs: fheStats?.elapsedMs,
+        pairMatching: {
+          matchedPairQty: pairMatching.matchedPairQty.toString(),
+          matchedPairUsdc: pairMatching.matchedPairUsdc.toString(),
+          matchedPercentBps: pairMatching.matchedPercentBps,
+          residualYesBuyQty: pairMatching.residualYesBuyQty.toString(),
+          residualNoBuyQty: pairMatching.residualNoBuyQty.toString(),
+          residualYesSellQty: pairMatching.residualYesSellQty.toString(),
+          residualNoSellQty: pairMatching.residualNoSellQty.toString(),
+        },
+        clobRouting: {
+          receiptCount: clobRouting.receipts.length,
+          totalUsdcToLp: clobRouting.totalUsdcToLp.toString(),
+          totalUsdcFromPolymarket: clobRouting.totalUsdcFromPolymarket.toString(),
+          source: clobRouting.receipts[0]?.source ?? "mock-devnet",
+          elapsedMs: clobRouting.elapsedMs,
+        },
+        liquidityProvider: {
+          lpId: clobRouting.lpQuote?.lpId ?? null,
+          displayName: clobRouting.lpQuote?.displayName ?? null,
+          usdcAmount: (clobRouting.lpQuote?.usdcAmount ?? 0n).toString(),
+          feeUsdc: (clobRouting.lpQuote?.feeUsdc ?? 0n).toString(),
+          feeBps: clobRouting.lpQuote?.feeBps ?? 0,
+          unavailable: clobRouting.lpUnavailable,
+        },
+      };
+      this.settlementStats.set(batchIndex.toString(), stats);
+
+      // 12. Plan the Ika cross-chain bundle (planning-only on devnet — no
+      // signatures fire here; see ikaOrchestrator.ts). The bundle surfaces
+      // via GET /batch/:id/cross-chain so the UI can show the atomic leg
+      // sequence that would execute on mainnet.
+      const bundle = planBundle({
+        batchId: batchIndex.toString(),
+        marketId: marketKey,
+        clearingPrice: result.clearingPrice,
+        pairMatching,
+        clobRouting,
+        lpQuote: clobRouting.lpQuote,
+      });
+      getBundleStore().save(bundle);
+      console.log(
+        `[IkaOrchestrator] Planned cross-chain bundle for batch ${batchIndex} ` +
+          `(${bundle.legs.length} legs, status=${bundle.status}).`,
+      );
+
       state.settlingBatchId = null;
 
     } catch (err) {
@@ -368,6 +640,30 @@ export class BatchProcessor {
     } finally {
       state.processingBatch = false;
     }
+  }
+
+  // ─── Accessors for claim path ───
+
+  /**
+   * Return all orders that were settled in the given batch, keyed by
+   * commitment hex. Used at claim time to rebuild the Merkle tree so the
+   * claim proof's membership check verifies against the correct root.
+   */
+  async getBatchOrders(batchId: bigint): Promise<Order[]> {
+    const map = await this.store.load(batchId.toString());
+    return Array.from(map.values());
+  }
+
+  /** Return the matched-pair / CLOB-routing breakdown for a settled batch. */
+  getSettlementStats(batchId: bigint): BatchSettlementStats | undefined {
+    return this.settlementStats.get(batchId.toString());
+  }
+
+  /** Return all settled batches' stats, newest first. Bounded to last 50. */
+  listSettlementStats(): BatchSettlementStats[] {
+    return Array.from(this.settlementStats.values())
+      .sort((a, b) => b.settledAt - a.settledAt)
+      .slice(0, 50);
   }
 
   // ─── Cleanup ───

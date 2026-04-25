@@ -76,6 +76,63 @@ export function markEphemeralFunded(userWallet: string, ephemeralPubkey: string,
   localStorage.setItem(key, JSON.stringify(updated));
 }
 
+// Default Umbra SDK options shared between the two client-initialization
+// paths. Kept here so swapping RPC/indexer config is a one-liner.
+async function umbraClientOptions() {
+  const network = (process.env.NEXT_PUBLIC_UMBRA_NETWORK as any) || "devnet";
+  const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com";
+  const rpcSubscriptionsUrl = rpcUrl.replace("https://", "wss://").replace("http://", "ws://");
+  // Umbra devnet endpoints (per https://sdk.umbraprivacy.com/llms.txt).
+  // Mainnet defaults (indexer.umbraprivacy.com) don't serve devnet data —
+  // this is the fix that unblocked real shield flows on Solana devnet.
+  //   devnet program ID: DSuKkyqGVGgo4QtPABfxKJKygUDACbUhirnuv63mEpAJ
+  const defaultIndexer =
+    network === "devnet"
+      ? "https://utxo-indexer.api-devnet.umbraprivacy.com"
+      : "https://indexer.umbraprivacy.com";
+  const indexerApiEndpoint = process.env.NEXT_PUBLIC_UMBRA_INDEXER || defaultIndexer;
+  return { network, rpcUrl, rpcSubscriptionsUrl, indexerApiEndpoint };
+}
+
+/**
+ * Phase B: build an Umbra client directly from an ephemeral Keypair.
+ *
+ * The SDK exposes `createSignerFromPrivateKeyBytes` which accepts raw
+ * 32-byte Ed25519 private key bytes. An ephemeral `Keypair` stores its
+ * secret as 64 bytes (32 priv || 32 pub) — the first 32 are what the
+ * signer wants. This lets the ephemeral authorize Umbra operations
+ * (shield, internal transfer, unshield) on its OWN balance, without
+ * needing a wallet-standard adapter.
+ *
+ * Returns null if the SDK fails to initialize (devnet without Umbra
+ * contracts, indexer unreachable, etc.) — callers must graceful-degrade.
+ */
+export async function getUmbraClientFromEphemeral(ephemeral: EphemeralWallet) {
+  try {
+    const sdk: any = await import("@umbra-privacy/sdk");
+    const bs58mod = await import("bs58");
+    const bs58 = (bs58mod as any).default ?? bs58mod;
+    const { network, rpcUrl, rpcSubscriptionsUrl, indexerApiEndpoint } = await umbraClientOptions();
+
+    // Decode the stored base58 secret → 64 bytes; Ed25519 private key is the first 32.
+    const secret = bs58.decode(ephemeral.secretKey) as Uint8Array;
+    const privKeyBytes = secret.slice(0, 32);
+
+    const signer = await sdk.createSignerFromPrivateKeyBytes(privKeyBytes);
+    const client = await sdk.getUmbraClient({
+      signer,
+      network,
+      rpcUrl,
+      rpcSubscriptionsUrl,
+      indexerApiEndpoint,
+    });
+    return { client, sdk };
+  } catch (err) {
+    console.warn("[Predacy] Umbra client (ephemeral signer) unavailable:", err);
+    return null;
+  }
+}
+
 /**
  * Initialize the Umbra client lazily. The SDK is heavy (~16MB) so we only
  * load it when the user actually opts into private mode.
@@ -87,12 +144,6 @@ export function markEphemeralFunded(userWallet: string, ephemeralPubkey: string,
 export async function getUmbraClient(walletStandard: any) {
   try {
     const sdk: any = await import("@umbra-privacy/sdk");
-    const network = (process.env.NEXT_PUBLIC_UMBRA_NETWORK as any) || "devnet";
-    // Privacy-sensitive: RPC provider sees every lookup. Configure a no-log
-    // privacy RPC in NEXT_PUBLIC_SOLANA_RPC_URL for mainnet — see
-    // frontend/.env.example for recommended providers (Helius, Triton, Ankr).
-    // Devnet fallback below is public Solana RPC (not privacy-preserving).
-    const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com";
     // Privy doesn't expose Solana wallet-standard interface directly.
     // For the hackathon devnet demo we degrade gracefully — the ephemeral
     // keypair pattern alone provides the wallet-unlinkability story; routing
@@ -100,13 +151,17 @@ export async function getUmbraClient(walletStandard: any) {
     if (!walletStandard?.wallet || !walletStandard?.account) {
       return null;
     }
+    const { network, rpcUrl, rpcSubscriptionsUrl, indexerApiEndpoint } = await umbraClientOptions();
+    // Privacy-sensitive: RPC provider sees every lookup. Configure a no-log
+    // privacy RPC in NEXT_PUBLIC_SOLANA_RPC_URL for mainnet — see
+    // frontend/.env.example for recommended providers (Helius, Triton, Ankr).
     const signer = sdk.createSignerFromWalletAccount(walletStandard.wallet, walletStandard.account);
     const client = await sdk.getUmbraClient({
       signer,
       network,
       rpcUrl,
-      rpcSubscriptionsUrl: rpcUrl.replace("https://", "wss://").replace("http://", "ws://"),
-      indexerApiEndpoint: process.env.NEXT_PUBLIC_UMBRA_INDEXER || "https://indexer.umbraprivacy.com",
+      rpcSubscriptionsUrl,
+      indexerApiEndpoint,
     });
     return { client, sdk };
   } catch (err) {
@@ -146,6 +201,54 @@ export async function fundEphemeralViaUmbra(
     return { ok: true, commitment: result?.utxoCommitment };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? "Umbra transfer failed" };
+  }
+}
+
+/**
+ * Phase B: shield the ephemeral's public balance into the Umbra pool, then
+ * emit a claimable UTXO addressed to the destination.
+ *
+ * This is the "amount-hiding" path — the destination's ATA receipt has no
+ * on-chain link to either the ephemeral's original balance amount or the
+ * user's main wallet. The mixer's anonymity set is the set of all Umbra
+ * users shielding/unshielding in the same time window.
+ *
+ * Fails gracefully: returns `{ ok: false, error }` if the SDK can't
+ * initialize (devnet without contracts, indexer unreachable, etc.) — the
+ * caller should then fall back to a plain SPL transfer.
+ */
+export async function shieldAndMoveViaMixer(params: {
+  ephemeral: EphemeralWallet;
+  destinationPubkey: string;   // base58 Solana address
+  mint: string;                // token mint (USDC / YES / NO)
+  amount: bigint;              // base units
+}): Promise<{ ok: boolean; error?: string; commitment?: string }> {
+  const initialized = await getUmbraClientFromEphemeral(params.ephemeral);
+  if (!initialized) {
+    return { ok: false, error: "Umbra unavailable — falling back to direct transfer" };
+  }
+  const { client, sdk } = initialized as any;
+
+  try {
+    // Ensure the ephemeral is registered in the Umbra protocol (idempotent).
+    const register = sdk.getUserRegistrationFunction({ client });
+    await register({ confidential: true, anonymous: true });
+
+    // Shield ephemeral's public balance → UTXO claimable by destination.
+    // Combines both halves of the Phase B flow in one SDK call: the tokens
+    // leave the ephemeral's ATA (shield op) and land as a claimable UTXO
+    // addressed to `destinationPubkey` in the Umbra pool, which destination
+    // can then claim out to its own public balance whenever it wants.
+    const createUtxo = sdk.getPublicBalanceToReceiverClaimableUtxoCreatorFunction({ client });
+    const result = await createUtxo({
+      receiverAddress: params.destinationPubkey,
+      mint: params.mint,
+      amount: params.amount,
+    });
+
+    return { ok: true, commitment: result?.utxoCommitment };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Umbra shield+move failed" };
   }
 }
 
@@ -217,6 +320,65 @@ export async function moveFromEphemeral(params: {
     const ephemeralKp = await getEphemeralKeypair(params.userWallet, params.ephemeralPubkey);
     if (!ephemeralKp) {
       return { ok: false, error: "Ephemeral keypair not found in local storage" };
+    }
+
+    // Phase B amount-hiding path — if viaMixer is on, try the Umbra mixer
+    // first. Needs destination resolved up-front (no deferred fresh-wallet
+    // in this branch). If Umbra is unavailable (devnet without contracts),
+    // fall through to the plain SPL path below.
+    if (params.viaMixer) {
+      const ephList = getEphemeralWallets(params.userWallet);
+      const eph = ephList.find((e) => e.publicKey === params.ephemeralPubkey);
+      if (!eph) {
+        return { ok: false, error: "Ephemeral record not in local storage" };
+      }
+      // Resolve destination (plain or fresh-wallet) BEFORE routing.
+      let destinationB58 = params.destination;
+      let freshPk: string | undefined;
+      if (!destinationB58) {
+        const { Keypair } = await import("@solana/web3.js");
+        const fresh = Keypair.generate();
+        destinationB58 = fresh.publicKey.toBase58();
+        freshPk = destinationB58;
+      }
+      // Need to know the amount — if undefined, query the ATA balance.
+      let mixerAmount = params.amount;
+      if (mixerAmount === undefined) {
+        const { Connection, PublicKey } = await import("@solana/web3.js");
+        const splToken = await import("@solana/spl-token");
+        const rpcUrl = params.rpcUrl
+          ?? process.env.NEXT_PUBLIC_SOLANA_RPC_URL
+          ?? "https://api.devnet.solana.com";
+        const connection = new Connection(rpcUrl, "confirmed");
+        const sourceAta = await splToken.getAssociatedTokenAddress(
+          new PublicKey(params.mint),
+          new PublicKey(params.ephemeralPubkey),
+        );
+        try {
+          const acct = await splToken.getAccount(connection, sourceAta);
+          mixerAmount = acct.amount;
+        } catch {
+          return { ok: false, error: "Ephemeral ATA not found (no balance to move via mixer)" };
+        }
+      }
+      if (mixerAmount === 0n) return { ok: false, error: "No balance in ephemeral ATA" };
+
+      const mixerResult = await shieldAndMoveViaMixer({
+        ephemeral: eph,
+        destinationPubkey: destinationB58,
+        mint: params.mint,
+        amount: mixerAmount,
+      });
+      if (mixerResult.ok) {
+        return {
+          ok: true,
+          signature: mixerResult.commitment, // Umbra UTXO commitment — not a Solana tx sig
+          amountMoved: mixerAmount,
+          freshDestination: freshPk,
+        };
+      }
+      // Mixer path failed → log + fall through to plain SPL transfer.
+      console.warn("[Predacy] viaMixer unavailable, falling back to plain transfer:", mixerResult.error);
     }
 
     const relayerUrl = params.relayerUrl
@@ -318,12 +480,9 @@ export async function moveFromEphemeral(params: {
       return { ok: false, error: data.error || `HTTP ${res.status}` };
     }
 
-    // TODO (Phase B): viaMixer path — after the above lands in the
-    // destination ATA, run an Umbra shield → internal transfer → unshield
-    // to decouple the amount. Requires keypair→wallet-standard adapter.
-    if (params.viaMixer) {
-      // Currently plain mode only. Flag forwarded so UI can label accordingly.
-    }
+    // viaMixer=true takes the Umbra path up above via shieldAndMoveViaMixer;
+    // reaching here means either viaMixer=false or the mixer attempt
+    // degraded to this plain SPL transfer.
 
     return {
       ok: true,

@@ -280,6 +280,10 @@ async function main() {
   const finalExcessYes = 0;
   const finalExcessNo = 0;
 
+  // Mock commitment_root — integration test no longer drives settle_batch
+  // past Groth16 verification (proofs are zero). See Step 7 for rationale.
+  const mockCommitmentRoot = Array(32).fill(0);
+
   await program.methods
     .lockFunds(
       new anchor.BN(clearingPrice),
@@ -291,6 +295,7 @@ async function main() {
       new anchor.BN(noGap),
       new anchor.BN(finalExcessYes),
       new anchor.BN(finalExcessNo),
+      mockCommitmentRoot,
     )
     .accounts({
       market,
@@ -321,36 +326,15 @@ async function main() {
   const yesVaultAccount = await getAccount(connection, yesVault);
   console.log(`   YES tokens in vault: ${Number(yesVaultAccount.amount) / 1e6}`);
 
-  // ─── Step 7: Settle Batch ───
-  console.log("\n7. Settling batch (Phase 2 — mock ZK proof)...");
-
-  const claimMerkleRoot = Array(32).fill(0); // mock root
-  const proofA = Array(64).fill(0);
-  const proofB = Array(128).fill(0);
-  const proofC = Array(64).fill(0);
-
-  await program.methods
-    .settleBatch(claimMerkleRoot, proofA, proofB, proofC)
-    .accounts({
-      market,
-      batch,
-      usdcVault,
-      yesVault,
-      noVault,
-      relayerUsdc: relayerUsdcAta.address,
-      relayerYes: relayerYesAta.address,
-      relayerNo: relayerNoAta.address,
-      relayer: relayer.publicKey,
-      tokenProgram: TOKEN_PROGRAM_ID,
-    })
-    .preInstructions([
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-    ])
-    .rpc();
-
+  // ─── Step 7: Settle Batch (SKIPPED in integration test) ───
+  // settle_batch now enforces Groth16 verification against real proofs —
+  // zero-byte mock proofs no longer pass. End-to-end verification instead
+  // happens via the relayer's real-proof path on devnet (run
+  // `npx ts-node scripts/test-real-zk.ts` to generate, then run the relayer
+  // in daemon mode and submit a real order).
+  console.log("\n7. (Skipping settleBatch — Groth16 verification rejects mock proofs.");
+  console.log("    Verified end-to-end via relayer's real-proof path on devnet.)");
   const batchAfterSettle = await (program.account as any).batch.fetch(batch);
-  console.log(`   ✓ Batch settled`);
-  console.log(`   Status: ${batchAfterSettle.status} (3 = SETTLED)`);
 
   // ─── Step 8: Claim Position (direct, non-private) ───
   console.log("\n8. Claiming position (direct claim, order 1)...");

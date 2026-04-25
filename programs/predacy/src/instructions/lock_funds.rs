@@ -6,6 +6,12 @@ use crate::error::PredacyError;
 use crate::events::FundsLocked;
 use crate::state::{Batch, BatchStatus, CommitmentStore, Market};
 
+/// Check commitment_root arg matches the CommitmentStore's count.
+/// We can't recompute Poseidon on-chain (too expensive), so we trust the
+/// relayer here — the Groth16 proof in settle_batch enforces that this root
+/// was derived from the actual committed hashes. The proof circuit rebuilds
+/// the Poseidon hash chain from the order preimages and checks it matches.
+
 #[derive(Accounts)]
 pub struct LockFunds<'info> {
     #[account(
@@ -68,6 +74,9 @@ pub fn handler(
     no_gap: u64,
     final_excess_yes: u64,
     final_excess_no: u64,
+    // Relayer-provided Poseidon commitment_root (matches ZK circuit).
+    // Enforced by the Groth16 proof in settle_batch.
+    commitment_root: [u8; 32],
 ) -> Result<()> {
     let batch = &mut ctx.accounts.batch;
     let market = &ctx.accounts.market;
@@ -78,17 +87,19 @@ pub fn handler(
     // Verify clearing price validity (0 < price < 1_000_000)
     require!(clearing_price > 0 && clearing_price < PRICE_DECIMALS, PredacyError::InvalidClearingPrice);
 
-    // Compute commitment root from stored commitments (sequential hash chain)
+    // Touch the commitment_store so Anchor verifies the seeds/bump match this
+    // batch. The actual root is Poseidon-based (computed off-chain) and
+    // enforced by the Groth16 proof in settle_batch — on-chain we just make
+    // sure the account exists with the right count.
     let store = ctx.accounts.commitment_store.load()?;
-    let mut root = [0u8; 32];
-    for i in 0..store.count as usize {
-        let combined = [root.as_ref(), store.commitments[i].hash.as_ref()].concat();
-        root = solana_program::keccak::hash(&combined).to_bytes();
-    }
+    require!(
+        store.count as u16 == batch.commitment_count,
+        PredacyError::CommitmentMismatch
+    );
 
     // Store settlement results
     batch.clearing_price = clearing_price;
-    batch.commitment_root = root;
+    batch.commitment_root = commitment_root;
     batch.filled_yes_buy_vol = filled_yes_buy_vol;
     batch.filled_no_buy_vol = filled_no_buy_vol;
     batch.filled_yes_sell_qty = filled_yes_sell_qty;

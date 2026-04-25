@@ -1,7 +1,7 @@
 import * as snarkjs from "snarkjs";
 import * as path from "path";
 import { Order, OrderSide, Groth16Proof, PRICE_DECIMALS } from "./types";
-import { computeCommitment, computeCommitmentRoot } from "./zkProver";
+import { computeCommitment, computeCommitmentRoot, BN254_BASE_FIELD_P, bigintToBe32 } from "./zkProver";
 
 // @ts-ignore
 import { buildPoseidon } from "circomlibjs";
@@ -84,6 +84,33 @@ export async function computeNullifier(
   const { poseidon, F } = await getPoseidon();
   const h = poseidon([commitment, batchId, salt]);
   return F.toObject(h);
+}
+
+/**
+ * Convert a Solana pubkey (32 bytes) to a BN254 scalar field element.
+ *
+ * The scalar field modulus r ≈ 2^254, and we need the pubkey value to be < r.
+ * Since the top byte of r is 0x30, masking the first byte with 0x1F (zeroing
+ * the top 3 bits) guarantees value < 2^253 < r — both on-chain and off-chain
+ * do the same reduction so the public input matches.
+ *
+ * Returns { fieldBigint, fieldBytes } — both representations are useful:
+ * the circuit wants a decimal bigint, the Anchor instruction wants [u8; 32].
+ */
+export function pubkeyToFieldElement(pubkeyBytes: Uint8Array): {
+  fieldBigint: bigint;
+  fieldBytes: Uint8Array;
+} {
+  if (pubkeyBytes.length !== 32) {
+    throw new Error(`Expected 32-byte pubkey, got ${pubkeyBytes.length}`);
+  }
+  const masked = new Uint8Array(pubkeyBytes);
+  masked[0] &= 0x1f; // zero top 3 bits → value < 2^253 < BN254 scalar modulus
+  let bi = 0n;
+  for (let i = 0; i < 32; i++) {
+    bi = (bi << 8n) | BigInt(masked[i]);
+  }
+  return { fieldBigint: bi, fieldBytes: masked };
 }
 
 /**
@@ -176,29 +203,26 @@ export async function generateClaimProof(
   };
 }
 
+// See zkProver.ts for rationale — proof.a must be negated for groth16-solana.
 function formatProof(proof: any): Groth16Proof {
-  const toBe32 = (n: string): Uint8Array => {
-    const bi = BigInt(n);
-    const buf = new Uint8Array(32);
-    for (let i = 31; i >= 0; i--) {
-      buf[i] = Number(bi >> BigInt((31 - i) * 8) & 0xffn);
-    }
-    return buf;
-  };
-
   const proofA = new Uint8Array(64);
-  proofA.set(toBe32(proof.pi_a[0]), 0);
-  proofA.set(toBe32(proof.pi_a[1]), 32);
+  const aX = BigInt(proof.pi_a[0]);
+  const aY = BigInt(proof.pi_a[1]);
+  const aYNeg = (BN254_BASE_FIELD_P - aY) % BN254_BASE_FIELD_P;
+  proofA.set(bigintToBe32(aX), 0);
+  proofA.set(bigintToBe32(aYNeg), 32);
 
+  // G2 in EIP-197 order (x_c1, x_c0, y_c1, y_c0) — empirically proven via
+  // on-chain discriminator (see zkProver.ts).
   const proofB = new Uint8Array(128);
-  proofB.set(toBe32(proof.pi_b[0][0]), 0);
-  proofB.set(toBe32(proof.pi_b[0][1]), 32);
-  proofB.set(toBe32(proof.pi_b[1][0]), 64);
-  proofB.set(toBe32(proof.pi_b[1][1]), 96);
+  proofB.set(bigintToBe32(BigInt(proof.pi_b[0][1])), 0);    // x_c1
+  proofB.set(bigintToBe32(BigInt(proof.pi_b[0][0])), 32);   // x_c0
+  proofB.set(bigintToBe32(BigInt(proof.pi_b[1][1])), 64);   // y_c1
+  proofB.set(bigintToBe32(BigInt(proof.pi_b[1][0])), 96);   // y_c0
 
   const proofC = new Uint8Array(64);
-  proofC.set(toBe32(proof.pi_c[0]), 0);
-  proofC.set(toBe32(proof.pi_c[1]), 32);
+  proofC.set(bigintToBe32(BigInt(proof.pi_c[0])), 0);
+  proofC.set(bigintToBe32(BigInt(proof.pi_c[1])), 32);
 
   return { proofA, proofB, proofC };
 }

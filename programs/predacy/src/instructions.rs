@@ -12,6 +12,7 @@ pub mod rescue_stuck_order;
 pub mod resolve_market;
 pub mod redeem_outcome;
 pub mod approve_ika_message;
+pub mod verify_test_vectors;
 
 pub use initialize::*;
 pub use create_market::*;
@@ -27,3 +28,4 @@ pub use rescue_stuck_order::*;
 pub use resolve_market::*;
 pub use redeem_outcome::*;
 pub use approve_ika_message::*;
+pub use verify_test_vectors::*;

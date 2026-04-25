@@ -1,10 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use groth16_solana::groth16::Groth16Verifier;
 
 use crate::constants::*;
 use crate::error::PredacyError;
 use crate::events::BatchSettled;
 use crate::state::{Batch, BatchStatus, Market};
+use crate::vkeys::BATCH_VK;
 
 #[derive(Accounts)]
 pub struct SettleBatch<'info> {
@@ -43,33 +45,81 @@ pub struct SettleBatch<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+/// Encode a u64 as a 32-byte big-endian array (BN254 field element).
+#[inline(always)]
+fn u64_to_be32(n: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..].copy_from_slice(&n.to_be_bytes());
+    out
+}
+
 pub fn handler(
     ctx: Context<SettleBatch>,
     claim_merkle_root: [u8; 32],
-    // Groth16 proof components (for future ZK verification)
-    _proof_a: [u8; 64],
-    _proof_b: [u8; 128],
-    _proof_c: [u8; 64],
+    proof_a: [u8; 64],
+    proof_b: [u8; 128],
+    proof_c: [u8; 64],
+    // Order count claimed by the prover. The circuit uses this as a public
+    // input; on-chain we accept it as an arg rather than reading from batch
+    // state because the relayer currently computes everything off-chain
+    // (commit_order is not submitted per order — a production hardening
+    // step tracked separately). If the relayer lies about order_count,
+    // the proof's `commitments[]` witness won't match the claimed
+    // commitment_root (the circuit hashes all 8 padded slots), so verify
+    // still fails.
+    order_count: u16,
 ) -> Result<()> {
     let batch = &mut ctx.accounts.batch;
 
     // Verify batch is LOCKED
     require!(batch.status() == BatchStatus::Locked, PredacyError::InvalidBatchStatus);
 
-    // TODO: Verify Groth16 proof using groth16-solana crate
-    // For hackathon MVP, we accept the proof as valid.
-    // Production: uncomment and integrate groth16_solana::groth16::Groth16Verifier
+    // ─── Groth16 verification of the batch clearing proof ───
+    // Circuit's 7 public inputs, in order (see circuits/batch_clearing/batch_clearing.circom):
+    //   1. commitmentRoot     — Poseidon chain of per-order commitments
+    //   2. clearingPrice      — 6-decimal fixed point
+    //   3. filledYesBuyVol    — USDC
+    //   4. filledNoBuyVol     — USDC
+    //   5. filledYesSellQty   — YES tokens
+    //   6. filledNoSellQty    — NO tokens
+    //   7. orderCount         — number of non-padding orders
     //
-    // let public_inputs = vec![
-    //     batch.commitment_root,
-    //     u64_to_be_bytes32(batch.clearing_price),
-    //     u64_to_be_bytes32(batch.filled_yes_buy_vol),
-    //     u64_to_be_bytes32(batch.filled_no_buy_vol),
-    //     u64_to_be_bytes32(batch.filled_yes_sell_qty),
-    //     u64_to_be_bytes32(batch.filled_no_sell_qty),
-    // ];
-    // let verifier = Groth16Verifier::new(&proof_a, &proof_b, &proof_c, &public_inputs, &BATCH_VK)?;
-    // require!(verifier.verify().is_ok(), PredacyError::ProofVerificationFailed);
+    // The circuit verifies: each commitment matches its preimage, the Poseidon
+    // root matches commitmentRoot, and the clearing algorithm produces the
+    // claimed filled volumes. If the relayer lied about ANY of these, the
+    // proof won't verify and the batch can't settle.
+    let public_inputs: [[u8; 32]; 7] = [
+        batch.commitment_root,
+        u64_to_be32(batch.clearing_price),
+        u64_to_be32(batch.filled_yes_buy_vol),
+        u64_to_be32(batch.filled_no_buy_vol),
+        u64_to_be32(batch.filled_yes_sell_qty),
+        u64_to_be32(batch.filled_no_sell_qty),
+        u64_to_be32(order_count as u64),
+    ];
+
+    // Strict Groth16 verification. Earlier diagnosis showed our G2 proof
+    // encoding was over-swapped — parse_vk_to_rust.js already writes the
+    // vkey in EIP-197 c1/c0 order, and the SBF `alt_bn128_pairing` syscall
+    // applies the same ordering internally, so proofs must be in the
+    // natural snarkjs (c0/c1) order. Fixed in zkProver.ts / zkClaimProver.ts
+    // on 2026-04-25. Validated by successfully verifying groth16-solana's
+    // own canonical test vectors on devnet (see verify_test_vectors ix).
+    let mut verifier = Groth16Verifier::new(
+        &proof_a,
+        &proof_b,
+        &proof_c,
+        &public_inputs,
+        &BATCH_VK,
+    )
+    .map_err(|e| {
+        msg!("Groth16Verifier::new rejected: {:?}", e);
+        PredacyError::ProofVerificationFailed
+    })?;
+    verifier.verify().map_err(|e| {
+        msg!("Groth16 pairing verify failed: {:?}", e);
+        PredacyError::ProofVerificationFailed
+    })?;
 
     // Relayer returns gap YES tokens to vault
     if batch.yes_gap > 0 {

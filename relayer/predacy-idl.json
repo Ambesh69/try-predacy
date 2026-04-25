@@ -30,7 +30,7 @@
           "name": "ika_program",
           "docs": [
             "The Ika dWallet program. Identified by address to prevent confused-deputy",
-            "attacks — only the real Ika program can be invoked.",
+            "attacks \u2014 only the real Ika program can be invoked.",
             "is invoked via CPI; no data reads from this account."
           ],
           "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY"
@@ -39,14 +39,14 @@
           "name": "ika_coordinator",
           "docs": [
             "Ika's DWalletCoordinator PDA (seeds: [b\"dwallet_coordinator\"] in Ika's program).",
-            "Read-only — the Ika program reads the current epoch from it."
+            "Read-only \u2014 the Ika program reads the current epoch from it."
           ]
         },
         {
           "name": "message_approval",
           "docs": [
             "The MessageApproval PDA to create. Seeds are enforced by Ika's",
-            "approve_message validation on its end — we pass it as an unchecked",
+            "approve_message validation on its end \u2014 we pass it as an unchecked",
             "account writable. Ika will init it with status=Pending."
           ],
           "writable": true
@@ -251,7 +251,7 @@
         {
           "name": "nullifier",
           "docs": [
-            "Nullifier PDA — init fails if already exists (double-claim prevention)"
+            "Nullifier PDA \u2014 init fails if already exists (double-claim prevention)"
           ],
           "writable": true,
           "pda": {
@@ -292,7 +292,7 @@
         {
           "name": "recipient_account",
           "docs": [
-            "Recipient's token account for payout (can be any wallet — privacy)"
+            "Recipient's token account for payout (can be any wallet \u2014 privacy)"
           ],
           "writable": true
         },
@@ -359,6 +359,15 @@
             "array": [
               "u8",
               64
+            ]
+          }
+        },
+        {
+          "name": "recipient_field",
+          "type": {
+            "array": [
+              "u8",
+              32
             ]
           }
         }
@@ -958,6 +967,15 @@
         {
           "name": "final_excess_no",
           "type": "u64"
+        },
+        {
+          "name": "commitment_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     },
@@ -1276,6 +1294,76 @@
               64
             ]
           }
+        },
+        {
+          "name": "order_count",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "verify_test_vectors",
+      "docs": [
+        "Discriminator test: run `Groth16Verifier` with the canonical test",
+        "vectors from groth16-solana's own test suite (mode=0), or with",
+        "user-supplied proof bytes against our BATCH_VK (mode=1)."
+      ],
+      "discriminator": [
+        245,
+        134,
+        136,
+        123,
+        148,
+        136,
+        253,
+        130
+      ],
+      "accounts": [],
+      "args": [
+        {
+          "name": "mode",
+          "type": "u8"
+        },
+        {
+          "name": "proof_a",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "proof_b",
+          "type": {
+            "array": [
+              "u8",
+              128
+            ]
+          }
+        },
+        {
+          "name": "proof_c",
+          "type": {
+            "array": [
+              "u8",
+              64
+            ]
+          }
+        },
+        {
+          "name": "pub_inputs",
+          "type": {
+            "array": [
+              {
+                "array": [
+                  "u8",
+                  32
+                ]
+              },
+              7
+            ]
+          }
         }
       ]
     }
@@ -1492,7 +1580,7 @@
     {
       "code": 6007,
       "name": "NullifierAlreadyUsed",
-      "msg": "Nullifier already used — double claim attempt"
+      "msg": "Nullifier already used \u2014 double claim attempt"
     },
     {
       "code": 6008,
@@ -1522,12 +1610,12 @@
     {
       "code": 6013,
       "name": "RescueDelayNotElapsed",
-      "msg": "Rescue delay not elapsed — must wait 7 days"
+      "msg": "Rescue delay not elapsed \u2014 must wait 7 days"
     },
     {
       "code": 6014,
       "name": "Unauthorized",
-      "msg": "Unauthorized — caller is not the authority"
+      "msg": "Unauthorized \u2014 caller is not the authority"
     },
     {
       "code": 6015,

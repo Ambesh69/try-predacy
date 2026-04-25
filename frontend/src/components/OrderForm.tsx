@@ -79,6 +79,16 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [balances, setBalances] = useState<{ usdc: string; yes: string; no: string } | null>(null);
   const [privacyMode, setPrivacyMode] = useState(true);
+  // Clearing mode — orthogonal to Umbra identity-privacy. Defaults to the
+  // relayer's configured mode (fetched from /health below). "fast" = ZK
+  // commitments + plaintext clearing (~35s settle); "strict" = FHE clearing,
+  // relayer is cryptographically blind during the clearing window
+  // (~45-60s settle). See ARCHITECTURE.md §5.4 for the submit-vs-settle
+  // latency framing. On devnet the toggle is advisory — the relayer's
+  // PRIVACY_MODE env var is what actually routes the batch. Per-order
+  // strict routing ships post-hackathon.
+  const [clearingMode, setClearingMode] = useState<"fast" | "strict">("fast");
+  const [relayerClearingMode, setRelayerClearingMode] = useState<"fast" | "strict">("fast");
 
   // Cancellation flag for in-flight submissions. Flipped to true by the
   // Escape handler during the mix window so the user can bail out without
@@ -100,6 +110,24 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
     const iv = setInterval(fetchBalances, 10_000);
     return () => clearInterval(iv);
   }, [walletAddress, marketId]);
+
+  // Fetch relayer's configured clearing mode once on mount so the toggle
+  // defaults to the mode batches will actually run in.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${RELAYER_URL}/health`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const mode = data?.privacyMode === "strict" ? "strict" : "fast";
+        setRelayerClearingMode(mode);
+        setClearingMode(mode);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const currentPrice = side === "yes" ? yesPrice : noPrice;
   const effectivePrice = orderType === "limit" && limitPriceInput
@@ -212,7 +240,17 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
       const res = await fetch(`${RELAYER_URL}/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ marketId, side: orderSide, amount: amountMicro, limitPrice, salt }),
+        body: JSON.stringify({
+          marketId,
+          side: orderSide,
+          amount: amountMicro,
+          limitPrice,
+          salt,
+          // Clearing-mode hint. On devnet the relayer's configured mode
+          // (from PRIVACY_MODE env) is authoritative — this field is
+          // advisory until per-order strict-mode routing ships.
+          clearingMode,
+        }),
       });
       const data = await res.json();
 
@@ -224,6 +262,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           marketId, marketQuestion, timestamp: Date.now(),
           ephemeralPubkey,
           privacyMode: !!ephemeralPubkey,
+          clearingMode,
         });
         if (orders.length > 200) orders.shift();
         localStorage.setItem(`predacy:orders:${walletAddress}`, JSON.stringify(orders));
@@ -247,7 +286,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
     } catch (err: any) {
       fail(err.message || "Network error");
     }
-  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, standardWallet]);
+  }, [authenticated, login, amount, amountNum, marketId, orderSide, orderType, limitPriceInput, currentPrice, walletAddress, marketQuestion, mode, side, privacyMode, clearingMode, standardWallet]);
 
   // Cancel an in-flight submission (called from Escape handler during mixing)
   const handleCancel = useCallback(() => {
@@ -447,7 +486,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
           <span className="text-[10px] text-muted-dim tracking-widest uppercase">Sealed-bid order · wallet hidden via ZK proof</span>
         </div>
 
-        {/* Privacy Mode toggle */}
+        {/* Privacy Mode toggle — Umbra mixer (identity hiding) */}
         <div className={clsx(
           "border px-3 py-2.5 transition-colors",
           privacyMode ? "border-accent/40 bg-accent/5" : "border-border/50",
@@ -457,8 +496,12 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
               <span className={clsx(
                 "text-[10px] tracking-widest uppercase font-bold",
                 privacyMode ? "text-accent" : "text-text",
-              )}>Privacy Mode {privacyMode ? "• ON" : ""}</span>
-              <span className="text-[9px] text-muted-dim">Route via Umbra mixer — wallet identity hidden</span>
+              )}>Identity · {privacyMode ? "HIDDEN" : "VISIBLE"}</span>
+              <span className="text-[9px] text-muted-dim">
+                {privacyMode
+                  ? "Route via Umbra mixer — wallet address unlinkable"
+                  : "Direct submit — wallet address visible on-chain"}
+              </span>
             </div>
             <button onClick={() => setPrivacyMode((v) => !v)}
               className={clsx(
@@ -468,6 +511,46 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
               <span className={clsx(
                 "absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform",
                 privacyMode ? "translate-x-4 bg-accent" : "translate-x-0 bg-muted",
+              )} />
+            </button>
+          </div>
+        </div>
+
+        {/* Clearing Mode toggle — FHE strict vs plaintext fast (content hiding).
+            Orthogonal to the identity-privacy toggle above: identity hiding
+            (who) vs content hiding (what). On devnet the relayer's configured
+            mode is authoritative — per-order strict routing ships post-hackathon. */}
+        <div className={clsx(
+          "border px-3 py-2.5 transition-colors",
+          clearingMode === "strict" ? "border-warning/40 bg-warning/5" : "border-border/50",
+        )}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className={clsx(
+                "text-[10px] tracking-widest uppercase font-bold",
+                clearingMode === "strict" ? "text-warning" : "text-text",
+              )}>
+                Clearing · {clearingMode === "strict" ? "🛡️ STRICT" : "⚡ FAST"}
+              </span>
+              <span className="text-[9px] text-muted-dim">
+                {clearingMode === "strict"
+                  ? "FHE · relayer can't see order content · settles ~45-60s"
+                  : "ZK commitments · relayer sees plaintext · settles ~35s"}
+              </span>
+              {clearingMode !== relayerClearingMode && (
+                <span className="text-[9px] text-warning/80 mt-0.5">
+                  ⓘ Relayer currently runs in {relayerClearingMode.toUpperCase()} mode — your choice is advisory until per-order routing lands.
+                </span>
+              )}
+            </div>
+            <button onClick={() => setClearingMode((m) => m === "strict" ? "fast" : "strict")}
+              className={clsx(
+                "relative w-9 h-5 rounded-full transition-colors flex-shrink-0",
+                clearingMode === "strict" ? "bg-warning/40" : "bg-border",
+              )}>
+              <span className={clsx(
+                "absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform",
+                clearingMode === "strict" ? "translate-x-4 bg-warning" : "translate-x-0 bg-muted",
               )} />
             </button>
           </div>

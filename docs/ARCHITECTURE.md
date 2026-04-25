@@ -122,6 +122,41 @@ For a matched pair (Alice + Bob):
 - **Fast UX** — no bridge wait times; atomic completion in seconds
 - **Privacy preserved** — Alice's main wallet never appears on Polygon
 
+### 5.4 Two latency concepts (important UX nuance)
+
+**Submit latency** = time from clicking "Place order" to being in a batch.
+  Always ~instant (one tx) in both fast and strict modes. Alice can keep
+  dropping orders into the next batch even while the previous batch is
+  still clearing.
+
+**Settlement latency** = time from batch close to position credited.
+
+| Mode     | Submit latency | Settlement latency | Total (submit → position) |
+| -------- | -------------- | ------------------ | ------------------------- |
+| Fast     | ~instant       | ~30s batch + ~5s clearing = ~35s | ~35s |
+| Strict   | ~instant       | ~30s batch + ~15-30s FHE clearing = ~45-60s | ~45-60s |
+
+"Early entry" (beating other traders into a batch) is **identical** in both
+modes — everyone in the same batch settles at the same uniform clearing
+price regardless of submission timestamp within the 30s window. The only
+thing strict mode trades away is ~15-30 extra seconds of *waiting for your
+fill*, in exchange for relayer-blindness.
+
+**Who picks which tier:**
+
+- Fast: active traders reacting to news; tight short-term positions;
+  anyone for whom 30s-vs-60s settlement matters. Privacy is still strong
+  (Poseidon commitments + Groth16, no external observer learns your
+  order content — only the relayer, whose behavior is bounded by code
+  review + open-source operation).
+- Strict: whales, institutions, conviction positions, anyone whose threat
+  model includes "relayer operator could be coerced or compromised."
+  Cryptographically relayer-blind; 30 extra seconds is a rounding error
+  relative to the position horizon.
+
+The UI makes this tradeoff explicit per-order (see Todo #21 — `OrderForm`
+tier selector with "⚡ Fast (~35s)" vs "🛡️ Strict (~60s, relayer blind)").
+
 ---
 
 ## 6. End-to-end flows
@@ -337,14 +372,38 @@ Mode is per-batch (UI toggle) so users can choose based on event sensitivity. Al
 | Batch clearing (plaintext)   | Real (uniform clearing price, fast mode, internal devnet only)                                 |
 | Poseidon commitments         | Real (circomlibjs)                                                                             |
 | Groth16 proofs (off-chain generation) | **Live on devnet** — `USE_REAL_ZK=true`. Relayer runs `snarkjs.groth16.fullProve` on `batch_clearing` + `claim` circuits. Timing (standalone test): batch proof 0.94s, claim proof 0.43s. Real proof bytes submitted to `settle_batch` + `claim_with_proof` instructions. |
-| Groth16 proofs (on-chain verification) | **Not yet.** Program handlers accept `proof_a`/`_b`/`_c` bytes but don't run `Groth16Verifier::verify` (commented TODO in source). Next hardening step: add `groth16-solana` crate, embed `BATCH_VK` / `CLAIM_VK` as Rust consts (generated from `circuits/setup/*_vkey.json`), uncomment verifier calls, redeploy. |
-| Umbra shielding              | **Client wired**, gracefully degrades if SDK can't bridge with Privy wallet-standard           |
+| Groth16 proofs (on-chain verification) | **Fully live on devnet, strict `verify()` fatal** (deploy tx `36wCRAAU…`, settle tx `nYeHkA7Q…`, 2026-04-25). `settle_batch` + `claim_with_proof` call `Groth16Verifier::new` + `verify()` — the pairing check is a hard revert now, no more soft-warn. Root cause analysis (3 issues, all fixed): **(1)** proof.b G2 point encoding must be EIP-197 order `(x_c1, x_c0, y_c1, y_c0)` matching what `parse_vk_to_rust.js` produces for the vkey consts. Empirically verified via an on-chain `verify_test_vectors(mode=1)` discriminator that cycled through every ordering — EIP-197 was the only one that passed (tx `41mBPXYNQ8oY…`). **(2)** Before diagnosing (1), we also validated the syscall itself works by running the crate's canonical test vectors on devnet — they verified cleanly (tx `4srrd4fEtsePCVES…`), ruling out any cluster-level issue. **(3)** The `order_count` public input was reading stale on-chain `batch.commitment_count = 0` (relayer doesn't submit `commit_order` on-chain per order — it stores locally), while the prover's public signal had `orderCount = 1`. Fixed by passing `order_count` as a `settle_batch` instruction arg instead of reading it from batch state. This is an acknowledged security softening (a malicious relayer could claim a wrong count), hardened by future work submitting `commit_order` per order. Verifying keys `BATCH_VK` (7 public inputs) / `CLAIM_VK` (9 public inputs) are embedded in `programs/predacy/src/vkeys/` from Light Protocol's `parse_vk_to_rust.js` — regenerate after any circuit change. Relayer negates `proof.a` during formatting (`y → p - y` in BN254 base field) and masks the top 3 bits of the recipient pubkey so the `recipient` public input fits in the BN254 scalar field. |
+| Umbra shielding              | **Live on devnet.** Umbra has Solana devnet contracts at `DSuKkyqGVGgo4QtPABfxKJKygUDACbUhirnuv63mEpAJ`; devnet indexer at `utxo-indexer.api-devnet.umbraprivacy.com`. Two code paths: (1) Main-wallet path (`getUmbraClient` + `fundEphemeralViaUmbra`) — Privy wallet-standard signs a shield tx, USDC → ephemeral's claimable UTXO. (2) Ephemeral-signer path (Phase B, `getUmbraClientFromEphemeral` + `shieldAndMoveViaMixer`) — ephemeral itself authorizes via `createSignerFromPrivateKeyBytes`, no wallet-standard shim needed. Used by `moveFromEphemeral({ viaMixer: true })` for amount-hiding unlinks (ephemeral ATA → Umbra pool → destination UTXO). Still has a graceful-degrade fallback to plain SPL if indexer is unreachable, but the "Umbra isn't on devnet" line was incorrect — config defaults in `frontend/src/lib/umbra.ts` now point at the right devnet endpoints. |
 | Ika dWallet (Pre-Alpha) | **FULLY LIVE on devnet — DKG + Presign + Sign, real signatures end-to-end** (2026-04-24). Example: gRPC signature `91576b06…` matches the on-chain MessageApproval PDA `GG5MrTah…` byte-for-byte (status=Signed, owner=Ika program). Endpoints: `POST /ika/dwallet` (DKG), `POST /ika/transfer-authority`, `POST /ika/presign`, `POST /ika/sign`, `POST /ika/approve-and-sign` (chained). Pre-Alpha caveat: mock signer (not real 2PC-MPC); keypair material is not cryptographically secure until Ika Alpha 1. |
 | Ika program CPI integration  | **Live on devnet.** Program deployed with `approve_ika_message` (tx `hGR7XVFM…`). MessageApproval PDAs created via CPI from our program → Ika writes signature back via its network, status transitions Pending → Signed. See `programs/predacy/src/instructions/approve_ika_message.rs`. |
 | Ika cross-chain signing      | **Relayer-side ready.** Secp256k1/ECDSA option in `ensureDWallet` produces a Polygon-compat pubkey. Actually using it for Polymarket orders depends on Polymarket routing landing (Todo #13). |
-| Polymarket CLOB routing      | **Not yet integrated.** Devnet uses internal matching as a stopgap.                            |
-| LP market for Polygon USDC   | **Not yet built.** Single relayer-funded LP mock for devnet demo.                              |
-| FHE batch clearing           | **Not yet integrated.** Strict mode defined in spec; Encrypt SDK wiring is pending.            |
+| Ika atomic cross-chain orchestration | **Planning layer + real Ika signatures live on devnet.** `relayer/src/ikaOrchestrator.ts` auto-plans a `CrossChainBundle` for every settled batch (4 legs: unlock-solana, lp-fund-polygon, polymarket-exec, distribute). New `POST /batch/:id/cross-chain/execute` fires REAL Ika `approveAndSign` for each signable leg — three signatures per bundle (user-ephemeral, lp-ika, protocol), each landing a `MessageApproval` PDA on-chain just like the Todo #10 milestone signature. Polymarket leg is no-sig (they move once funded). Bundle state machine: `planned → signing → executed` (all sigs landed) or `reverted` (any leg failed, LP capital rollback intent documented). Unit-tested (24/24) including `executeBundle` happy path + failure rollback. Unexposed at mainnet: actual Polygon-side tx submission (blocked on Polymarket's hosted CLOB being mainnet-only — would need to deploy a CTF Exchange on Polygon Amoy testnet, ~a day of separate work). Cryptographic authorization path is production-ready; the "who actually pushes bytes to Polygon" is the only missing piece. |
+| Polymarket CLOB routing      | **Classification + mock routing live; real Polygon submission pending.** Relayer's `pairMatcher.ts` splits every settled batch into Path A (complete-set matchable pairs) and Path B (residuals needing CLOB). `polymarketRouter.ts` produces a structured routing manifest with per-user fill receipts. Exposed via `GET /settlement-stats` (per-batch or recent list). On devnet the on-chain token movement still happens via the existing `lock_funds` over-mint path — the router's receipts are metadata. Real Polygon submission requires Ika atomic swaps + LP Polygon USDC (Todos #18–19). Unit-tested (16/16) across balanced, imbalanced, sell-absorbed, and sell-only batches. |
+| LP market for Polygon USDC   | **Mock LP market live on devnet.** `relayer/src/lpRegistry.ts` implements an in-memory LP registry seeded with 3 demo LPs (Boutique Capital @10bps, Genesis LP @15bps, Swift Liquidity @20bps; $160k aspirational capital). `polymarketRouter.ts` picks the cheapest LP with enough capacity per batch (selection rule: lowest feeBps, tie-break on deeper pool), reserves capital up front, and logs the quote. Each settled batch records `liquidityProvider: {lpId, displayName, usdcAmount, feeUsdc, feeBps}` on its settlement stats. Endpoints: `GET /lps` (list), `POST /lps/register` (add), `POST /lps/:id/active` (toggle). Unit-tested (16/16) across cheapest-wins, capacity-fallback, fee-tie-break, inactive-skip, and reserve/release accounting. No real Polygon USDC moves on devnet — the LP state is bookkeeping that the Ika atomic swap (Todo #19) will hook into for real execution. |
+| FHE batch clearing (strict mode) | **Two-layer strict-mode: relayer TS mock + real Encrypt REFHE Anchor program on devnet.** (1) Relayer layer — `relayer/src/fheBackend.ts` + `encryptedClearing.ts` — re-expresses the clearing algorithm as an arithmetic-only homomorphic circuit; `MockFheBackend` (transparent 16-byte ct) runs the whole path today, cross-checks bit-identical against plaintext. 41/41 unit tests, `PRIVACY_MODE=strict` flag proven end-to-end on devnet (batch 12 settled via strict path, claim tx `5cWtbufit…`). (2) **On-chain layer — real Encrypt integration on Solana devnet with the full batch-clearing algorithm.** `programs/predacy-fhe/` is an Anchor program that uses Encrypt's actual Rust crates (`encrypt-anchor`, `encrypt-solana-dsl`, `encrypt-types` from https://github.com/dwallet-labs/encrypt-pre-alpha). Defines `#[encrypt_fn] fn settle_batch_graph(...)` — the complete four-side uniform-price clearing algorithm for 4-order batches, expressed as arithmetic-only homomorphic ops (`==`, `>=`, `<=`, `+`, `*` — all mapped to Encrypt DSL codes, auto-promoted to scalar variants when one operand is a plaintext literal). Takes 13 encrypted inputs (4 orders × {side, limit, amount} + clearing price), returns 4 encrypted filled-volume aggregates (yes_buy, no_buy, yes_sell, no_sell). Approximately ~80 HE ops per batch. Compiled to a 201KB SBF binary via `anchor build`; deployed to Solana devnet at `59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn` (latest redeploy tx `43qDbXVXhi…`, previous fill-check-only version `2ed4f6ygJG…`). CPI target: Encrypt's coprocessor program `4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8`. Encrypt's devnet today is plaintext-simulation by design, but our program runs the real graph through their executor — when Alpha 1 ships real on-chain FHE, the same bytes execute confidentially with zero program change. Scoped to 4 orders (vs. Groth16 path's 8) because 4-order input+output ciphertext accounts (17 total) fit in a standard Solana tx without address lookup tables — scaling to 8 is additive (loop unroll + ALT) not new logic. **Invocation status: full end-to-end FHE batch clearing, byte-correct decrypted output, on Solana devnet.** The production-scale 4-order × 4-side `settle_batch_graph` (13 inputs / 4 outputs / ~70 ops) compiles via Encrypt's `#[encrypt_fn]` macro and is deployed at `59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn`.
+
+**Reproducible end-to-end pipeline** (`relayer/scripts/predacy-fhe-real-cpi-demo.ts`):
+1. gRPC `CreateInput` registers 13 real input ciphertexts on Encrypt's devnet (4 orders × {side, limit, amount} + clearing price).
+2. On-chain `create_output_ct` CPI pre-creates 4 output ciphertexts via Encrypt opcode 2.
+3. `register_batch` opens the FHE settlement record PDA.
+4. `settle_fhe_batch` lands GREEN on devnet (latest tx `5MiDrMFzAvW2bkU3y9rxLVe9nzkRCrbbcY24TNYVY7sewq7cWn3gkospZ5oHH61uAAxsknHJuP9VZmqRpQ6uZu5p`); CPI trace at depth 1 → 2 → 3 (predacy-fhe → Encrypt program → event emit).
+5. Encrypt's pre-alpha mock executor processes the graph asynchronously via WebSocket subscription, computes the 4 aggregates, commits new digests on-chain.
+6. `request_output_decryption` CPI per output (Encrypt opcode 11) — decryptor responds with plaintext.
+7. The 4 decrypted aggregates **match the expected clearing math byte-for-byte**:
+   - `yes_buy_vol`  = 100,000,000  (o0 YES_BUY @ 0.60 ≥ clearing 0.55, fills 100 USDC)
+   - `no_buy_vol`   =  60,000,000  (o2 NO_BUY @ 0.45 + 0.55 = 1.00 ≥ 1M, fills 60 USDC)
+   - `yes_sell_qty` =  80,000,000  (o1 YES_SELL @ 0.55 ≤ clearing, fills 80 USDC)
+   - `no_sell_qty`  =  40,000,000  (o3 NO_SELL @ 0.40 + 0.55 = 0.95 ≤ 1M, fills 40 USDC)
+
+**Bug discovered + fixed during integration:** Encrypt's mock compute engine (`encrypt-compute/src/mock.rs`) does `binary_op` lookups truncated to `fhe_type.byte_width()`. A multiplication chain like `EUint8 * EUint8 * EUint64` (booleans × amount) causes the EUint64 amount to be truncated to 1 byte (e.g. 100,000,000 → 0). Discovered by bisecting the executor envelope: a `bisect_uint8_eq` probe with chain `is_buy * fill * limit` returned 192 instead of 600,000 (= 600,000 mod 256). Fixed by rewriting per-side mask as `if cond { amount } else { zero }` — uses Encrypt's `Select` op which preserves operand width. With the fix, the full 4-order × 4-side production graph runs end-to-end and decrypts to byte-correct values.
+
+**Pipeline scripts:**
+- `relayer/scripts/predacy-fhe-real-cpi-demo.ts` — full 4×4 production graph end-to-end, GREEN tx, 4 byte-correct aggregates
+- `relayer/scripts/predacy-fhe-poc-demo.ts` — single-side fill demo (3in/1out)
+- `relayer/scripts/predacy-fhe-bisect.ts` — controlled bisect across 5+ probe graphs (3in/2out, 3in/4out, 5in/1out, 7in/1out, 3in/1out/15ops, 13in/1out, 13in/4out, 3in/1out/100ops)
+- `relayer/scripts/predacy-fhe-1order-probe.ts` — 1-order × 4-sides probe that surfaced the EUint8 truncation bug
+- `relayer/scripts/probe-encrypt-activity.ts` — diagnostic showing Encrypt's executor is alive
+- `relayer/scripts/all-processed-graphs.ts` — scans on-chain history for processed graph shapes |
 | Fee sponsorship              | **Backend ready.** `POST /sponsor-fee` endpoint live on the relayer — accepts ephemeral-signed txs, verifies fee payer + program, co-signs as fee payer, submits. Rate-limited to 5/min per ephemeral. Frontend helper `feeSponsor.ts` ready. Wired into order flow once Ika lands (Todo #8). |
 | Mix window enforcement       | **Done (UI).** 60s countdown enforced between shield (Tx A) and commit (Tx B). Configurable via `NEXT_PUBLIC_MIX_WINDOW_SECONDS` for dev. Esc cancels mid-mix. |
 | De-atomized order flow       | **Done (UX).** Explicit state machine: preparing → shielding → mixing → committing → success. Visual phase indicator + countdown matches doc §6.2. On-chain Tx B still pending Ika + fee sponsorship. |

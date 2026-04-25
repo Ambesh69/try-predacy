@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { loadConfig } from "./config";
 import { SolanaClient } from "./solanaClient";
 import { BatchProcessor } from "./batchProcessor";
-import { generateClaimProof, computeNullifier } from "./zkClaimProver";
+import { generateClaimProof, computeNullifier, pubkeyToFieldElement } from "./zkClaimProver";
 import { computeCommitment } from "./zkProver";
 import { ClaimJob, OrderSide, Order } from "./types";
 import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
@@ -19,6 +19,10 @@ const processor = new BatchProcessor(
   client,
   config.circuitsPath,
   config.useRealZk,
+  {
+    privacyMode: config.privacyMode,
+    fheBackend: config.fheBackend,
+  },
 );
 
 // WebSocket-based log streamer — works on any RPC with WSS (RPC Fast Hackathon
@@ -69,6 +73,8 @@ app.get("/health", (_req, res) => {
     relayer: config.relayerKeypair.publicKey.toBase58(),
     programId: config.programId,
     useRealZk: config.useRealZk,
+    privacyMode: config.privacyMode,
+    fheBackend: config.privacyMode === "strict" ? config.fheBackend : null,
     rpcFastEnabled: config.rpcFastEnabled,
     logStreaming: true,
     grpcStreaming: config.rpcFastGrpcEnabled && grpcStreamer.enabled,
@@ -157,8 +163,9 @@ app.post("/ika/approve-and-sign", async (req, res) => {
     if (!record.authorityTransferred) return res.status(400).json({ error: "Authority not transferred — call /ika/transfer-authority first" });
 
     const { keccak_256 } = await import("@noble/hashes/sha3.js");
-    const bs58mod = await import("bs58");
-    const bs58 = (bs58mod as any).default ?? bs58mod;
+    // @ts-ignore
+    const bs58mod: any = await import("bs58");
+    const bs58: any = bs58mod.default ?? bs58mod;
 
     const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
     const pubkeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
@@ -534,6 +541,210 @@ app.get("/batch-status", (req, res) => {
   });
 });
 
+// ─── LP registry — Polygon USDC liquidity market (mock, devnet) ───
+// See lpRegistry.ts for the design. LPs quote Polygon USDC for CLOB
+// residuals at a basis-point fee; the relayer's polymarketRouter picks
+// the cheapest available LP per batch. Real Ika-orchestrated atomic swaps
+// are Todo #19.
+app.get("/lps", (_req, res) => {
+  const { getLPRegistry } = require("./lpRegistry");
+  const registry = getLPRegistry();
+  res.json({
+    lps: registry.list().map((lp: any) => ({
+      ...lp,
+      availableUsdc: lp.availableUsdc.toString(),
+      earnedFeesUsdc: lp.earnedFeesUsdc.toString(),
+      totalVolumeUsdc: lp.totalVolumeUsdc.toString(),
+    })),
+  });
+});
+
+app.post("/lps/register", (req, res) => {
+  try {
+    const {
+      id,
+      displayName,
+      solanaReceiveAddress,
+      polygonPayoutAddress,
+      availableUsdc,
+      feeBps,
+    } = req.body;
+    if (!id || !displayName || !solanaReceiveAddress || !polygonPayoutAddress) {
+      return res.status(400).json({ error: "missing required fields" });
+    }
+    const { getLPRegistry } = require("./lpRegistry");
+    const lp = getLPRegistry().register({
+      id,
+      displayName,
+      solanaReceiveAddress,
+      polygonPayoutAddress,
+      availableUsdc: BigInt(availableUsdc ?? 0),
+      feeBps: Number(feeBps ?? 20),
+    });
+    res.json({
+      ok: true,
+      lp: {
+        ...lp,
+        availableUsdc: lp.availableUsdc.toString(),
+        earnedFeesUsdc: lp.earnedFeesUsdc.toString(),
+        totalVolumeUsdc: lp.totalVolumeUsdc.toString(),
+      },
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/lps/:id/active", (req, res) => {
+  const { active } = req.body;
+  const { getLPRegistry } = require("./lpRegistry");
+  const ok = getLPRegistry().setActive(req.params.id, Boolean(active));
+  if (!ok) return res.status(404).json({ error: "LP not found" });
+  res.json({ ok: true });
+});
+
+// ─── Cross-chain bundle (Ika orchestrator) ───
+// Planned legs for a settled batch: unlock Solana → LP fund Polygon →
+// Polymarket execute → distribute. See ikaOrchestrator.ts for the design.
+// On devnet these are plans only (real signatures require the Polygon side
+// to exist); Ika signature legs can be exercised individually via
+// /ika/approve-and-sign. Production flips this from "planned" to "executed"
+// with Ika 2PC-MPC running all legs atomically.
+app.get("/batch/:id/cross-chain", (req, res) => {
+  const { getBundleStore, serializeBundle } = require("./ikaOrchestrator");
+  const bundle = getBundleStore().get(req.params.id);
+  if (!bundle) return res.status(404).json({ error: "No bundle for that batch — not settled yet?" });
+  res.json(serializeBundle(bundle));
+});
+
+app.get("/cross-chain/recent", (_req, res) => {
+  const { getBundleStore, serializeBundle } = require("./ikaOrchestrator");
+  res.json({
+    recent: getBundleStore().list().map(serializeBundle),
+  });
+});
+
+// POST /batch/:id/cross-chain/execute
+// body: { userWallet: string }
+//
+// Fire real Ika signatures for each signable leg in the bundle. Requires
+// the user to already have a dWallet + authority transferred (`POST
+// /ika/dwallet` then `/ika/transfer-authority`). Each leg's messageDigest
+// is signed via the same approveAndSign flow that's already proven on
+// devnet (`GG5MrTah…`). Completes the bundle's cryptographic authorization
+// path; Polygon-side tx submission still requires CTF Exchange on Amoy
+// and is tracked separately. ~1 Solana tx + gRPC round-trip per leg.
+app.post("/batch/:id/cross-chain/execute", async (req, res) => {
+  try {
+    const { userWallet } = req.body;
+    if (!userWallet) return res.status(400).json({ error: "userWallet required" });
+    const {
+      getBundleStore,
+      executeBundle,
+      serializeBundle,
+    } = require("./ikaOrchestrator");
+    const store = getBundleStore();
+    const bundle = store.get(req.params.id);
+    if (!bundle) return res.status(404).json({ error: "No bundle for that batch" });
+
+    // Inline approveAndSign wrapper: reuses ikaManager + the same digest
+    // path as POST /ika/approve-and-sign. We derive the MessageApproval
+    // PDA on the fly and fire the CPI, then request the Ika presign+sign.
+    const { keccak_256 } = await import("@noble/hashes/sha3.js");
+    // @ts-ignore
+    const bs58mod: any = await import("bs58");
+    const bs58: any = bs58mod.default ?? bs58mod;
+
+    const approveAndSign = async (uw: string, digest: Uint8Array) => {
+      const record = ikaManager.getDWallet(uw);
+      if (!record) throw new Error(`No dWallet for ${uw}`);
+      if (!record.authorityTransferred) throw new Error("Authority not transferred");
+      const pubkeyBytes = Uint8Array.from(Buffer.from(record.publicKey, "hex"));
+      const curveByte = record.curve === "Curve25519" ? 2 : 0;
+      const sigScheme = record.curve === "Curve25519" ? 5 : 0;
+
+      const ikaProgramId = ikaManager.getProgramId();
+      const payload = Buffer.alloc(2 + pubkeyBytes.length);
+      payload.writeUInt16LE(curveByte, 0);
+      Buffer.from(pubkeyBytes).copy(payload, 2);
+      const pubkeyChunks: Buffer[] = [];
+      for (let i = 0; i < payload.length; i += 32) {
+        pubkeyChunks.push(payload.subarray(i, Math.min(i + 32, payload.length)));
+      }
+      const schemeBuf = Buffer.alloc(2);
+      schemeBuf.writeUInt16LE(sigScheme, 0);
+      const maSeeds = [
+        Buffer.from("dwallet"),
+        ...pubkeyChunks,
+        Buffer.from("message_approval"),
+        schemeBuf,
+        Buffer.from(digest),
+      ];
+      const [messageApprovalPda, messageApprovalBump] = PublicKey.findProgramAddressSync(maSeeds, ikaProgramId);
+
+      const [cpiAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("__ika_cpi_authority")],
+        new PublicKey(config.programId),
+      );
+      const [coordinator] = PublicKey.findProgramAddressSync(
+        [Buffer.from("dwallet_coordinator")],
+        ikaProgramId,
+      );
+
+      const predacy = (client as any).program;
+      const txSig: string = await predacy.methods
+        .approveIkaMessage(
+          Array.from(digest),
+          Array.from(new Uint8Array(32)),
+          Array.from(pubkeyBytes.slice(0, 32)),
+          sigScheme,
+          messageApprovalBump,
+        )
+        .accounts({
+          ikaProgram: ikaProgramId,
+          ikaCoordinator: coordinator,
+          messageApproval: messageApprovalPda,
+          dwallet: new PublicKey(record.dwalletPda),
+          cpiAuthority,
+          predacyProgram: new PublicKey(config.programId),
+          payer: config.relayerKeypair.publicKey,
+        })
+        .rpc();
+      const conn = client.getConnection();
+      await conn.confirmTransaction(txSig, "confirmed");
+      const approveTxBytes = Buffer.from(bs58.decode(txSig));
+      const presignId = await ikaManager.requestPresign(uw);
+      const signResult = await ikaManager.signMessage(uw, digest, presignId, approveTxBytes.toString("base64"), 0n);
+      return {
+        signature: Buffer.from(signResult.signature).toString("hex"),
+        approveTxSignature: txSig,
+      };
+    };
+
+    const executed = await executeBundle(bundle, approveAndSign, userWallet);
+    store.save(executed);
+    res.json({ ok: true, bundle: serializeBundle(executed) });
+  } catch (err: any) {
+    console.error("[POST /batch/:id/cross-chain/execute] error:", err);
+    res.status(500).json({ error: err?.message ?? String(err) });
+  }
+});
+
+// ─── Settlement stats — matched-pair / CLOB breakdown ───
+// Populated after processBatch finishes. See pairMatcher.ts + polymarketRouter.ts
+// for the classification logic. Used by the UI to show `X% matched as
+// complete-set pairs, Y% routed to Polymarket CLOB`.
+app.get("/settlement-stats", (req, res) => {
+  const batchId = req.query.batchId as string | undefined;
+  if (batchId) {
+    const stats = processor.getSettlementStats(BigInt(batchId));
+    if (!stats) return res.status(404).json({ error: "No stats for that batch yet" });
+    return res.json(stats);
+  }
+  // No batchId → return the most recent settled batches (bounded).
+  res.json({ recent: processor.listSettlementStats() });
+});
+
 // ─── Claim Proof (Async) ───
 app.post("/claim-proof", async (req, res) => {
   try {
@@ -607,14 +818,50 @@ async function processClaimJob(job: ClaimJob): Promise<void> {
     const batch = await client.fetchBatch(job.marketId, job.batchId);
     const clearingPrice = BigInt((batch as any).clearingPrice.toString());
 
-    // TODO: Fetch all commitments from on-chain CommitmentStore
-    // For now, use stored orders
+    // Rebuild the batch's commitment list from the order store. Must match
+    // the order the Merkle tree was built in during settleBatch (insertion
+    // order), otherwise the membership proof's root won't match the on-chain
+    // claim_merkle_root and the on-chain verifier will reject.
+    const batchOrders = await processor.getBatchOrders(job.batchId);
+    const allCommitments: bigint[] = [];
+    for (const o of batchOrders) {
+      allCommitments.push(
+        await computeCommitment(marketIdBigInt, o.side, o.amount, o.limitPrice, o.salt),
+      );
+    }
+
+    // This order's leaf position in the tree.
     const commitment = await computeCommitment(
       marketIdBigInt, order.side, order.amount, order.limitPrice, order.salt,
     );
-    const allCommitments = [commitment]; // simplified — needs all batch commitments
+    const leafIndex = allCommitments.findIndex((c) => c === commitment);
+    if (leafIndex < 0) {
+      throw new Error(`Order commitment not found in batch ${job.batchId} — cannot prove membership`);
+    }
 
-    const recipientBigInt = BigInt("0x" + Buffer.from(job.recipient.toBytes()).toString("hex"));
+    // ── Resolve recipient token ATA (both real + mock paths) ──
+    // The instruction accepts any TokenAccount; which mint it should be
+    // depends on side: buyers get YES/NO, sellers get USDC refund back.
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    const connection = client.getConnection();
+    const isBuy = order.side === 0 || order.side === 2; // YES_BUY or NO_BUY
+    const isYes = order.side === 0 || order.side === 1; // YES_BUY or YES_SELL
+    let recipientAta: PublicKey;
+    if (isBuy) {
+      const [mint] = isYes ? client.yesMintPda(job.marketId) : client.noMintPda(job.marketId);
+      const ata = await getOrCreateAssociatedTokenAccount(connection, config.relayerKeypair, mint, job.recipient);
+      recipientAta = ata.address;
+    } else {
+      const protocolCfg = await client.fetchProtocolConfig();
+      const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+      const ata = await getOrCreateAssociatedTokenAccount(connection, config.relayerKeypair, usdcMint, job.recipient);
+      recipientAta = ata.address;
+    }
+
+    // Recipient field element — must match what's used inside the proof.
+    // pubkeyToFieldElement masks top 3 bits so value < BN254 scalar modulus.
+    const { fieldBigint: recipientFieldBigint, fieldBytes: recipientFieldBytes } =
+      pubkeyToFieldElement(job.recipient.toBytes());
 
     if (config.useRealZk) {
       const result = await generateClaimProof(
@@ -623,8 +870,8 @@ async function processClaimJob(job: ClaimJob): Promise<void> {
         job.batchId,
         clearingPrice,
         allCommitments,
-        0, // leafIndex — simplified
-        recipientBigInt,
+        leafIndex,
+        recipientFieldBigint,
         config.circuitsPath,
       );
 
@@ -641,48 +888,20 @@ async function processClaimJob(job: ClaimJob): Promise<void> {
         Array.from(result.proof.proofA),
         Array.from(result.proof.proofB),
         Array.from(result.proof.proofC),
-        job.recipient,
+        recipientAta,
+        Array.from(recipientFieldBytes),
       );
 
       job.txHash = txHash;
     } else {
-      // Mock proof path
-      const nullifier = await computeNullifier(commitment, job.batchId, order.salt);
-      const nullifierBytes = bigintToBytes32Array(nullifier);
-
-      // Create recipient's token ATA if needed (YES or NO depending on side)
-      const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
-      const connection = client.getConnection();
-      const isBuy = order.side === 0 || order.side === 2; // YES_BUY or NO_BUY
-      const isYes = order.side === 0 || order.side === 1; // YES_BUY or YES_SELL
-      let recipientAta: PublicKey;
-      if (isBuy) {
-        // Buyer receives YES or NO tokens
-        const [mint] = isYes ? client.yesMintPda(job.marketId) : client.noMintPda(job.marketId);
-        const ata = await getOrCreateAssociatedTokenAccount(connection, config.relayerKeypair, mint, job.recipient);
-        recipientAta = ata.address;
-      } else {
-        // Seller receives USDC refund
-        const protocolCfg = await client.fetchProtocolConfig();
-        const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
-        const ata = await getOrCreateAssociatedTokenAccount(connection, config.relayerKeypair, usdcMint, job.recipient);
-        recipientAta = ata.address;
-      }
-
-      job.status = "submitting";
-      const txHash = await client.claimWithProof(
-        job.marketId,
-        job.batchId,
-        nullifierBytes,
-        order.side,
-        order.amount, // simplified fill amount
-        0n,
-        new Array(64).fill(0),
-        new Array(128).fill(0),
-        new Array(64).fill(0),
-        recipientAta,
+      // On-chain Groth16 verification is now always enforced. Mock proofs
+      // (all-zero bytes) will fail verification, so this path is no longer
+      // usable end-to-end. Kept behind a hard error so the failure mode is
+      // loud — flip USE_REAL_ZK=true in .env to enable claims.
+      throw new Error(
+        "USE_REAL_ZK=false but on-chain verifier requires real proofs. " +
+          "Set USE_REAL_ZK=true and restart the relayer.",
       );
-      job.txHash = txHash;
     }
 
     job.status = "done";

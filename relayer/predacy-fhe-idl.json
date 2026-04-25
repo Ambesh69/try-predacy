@@ -1,0 +1,1537 @@
+{
+  "address": "59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn",
+  "metadata": {
+    "name": "predacy_fhe",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Predacy REFHE batch-clearing primitive — homomorphic 4-side uniform-price auction on Solana, built on Encrypt's REFHE coprocessor"
+  },
+  "instructions": [
+    {
+      "name": "create_output_ct",
+      "docs": [
+        "Pre-create an output ciphertext for the FHE graph to overwrite.",
+        "",
+        "Calls Encrypt's `create_plaintext_ciphertext` ix (opcode 2) directly.",
+        "This is the on-chain path for output accounts — they're created",
+        "authorized to our CPI authority so the graph executor can overwrite",
+        "them during `settle_fhe_batch`."
+      ],
+      "discriminator": [
+        22,
+        204,
+        46,
+        168,
+        214,
+        129,
+        61,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "ciphertext",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        },
+        {
+          "name": "fhe_type",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "make_output_public",
+      "docs": [
+        "Mark an output ciphertext as fully public so anyone can read it",
+        "via Encrypt's gRPC `ReadCiphertext`. Calls Encrypt's `make_public`",
+        "ix (opcode 10)."
+      ],
+      "discriminator": [
+        217,
+        33,
+        246,
+        109,
+        124,
+        106,
+        131,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "ciphertext",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "encrypt_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "register_batch",
+      "docs": [
+        "Open a record for a 4-order FHE batch settlement."
+      ],
+      "discriminator": [
+        255,
+        186,
+        59,
+        153,
+        95,
+        233,
+        143,
+        171
+      ],
+      "accounts": [
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  104,
+                  101,
+                  95,
+                  98,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_id"
+              },
+              {
+                "kind": "arg",
+                "path": "batch_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "batch_index",
+          "type": "u64"
+        },
+        {
+          "name": "yes_buy_vol_ct",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "no_buy_vol_ct",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "yes_sell_qty_ct",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "no_sell_qty_ct",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "request_output_decryption",
+      "docs": [
+        "Request off-chain decryption of an output ciphertext.",
+        "",
+        "Calls Encrypt's `request_decryption` ix (opcode 11) directly via CPI.",
+        "We pass `request_acct` with `is_signer=true` because Encrypt's handler",
+        "internally calls `system_instruction::create_account` which needs",
+        "the new account to sign — the SDK's wrapper omits this signer flag,",
+        "so we build the AccountMetas ourselves.",
+        "Snapshots the ciphertext digest into the record for reveal-time verification."
+      ],
+      "discriminator": [
+        126,
+        52,
+        232,
+        231,
+        170,
+        171,
+        189,
+        69
+      ],
+      "accounts": [
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "output_ct"
+        },
+        {
+          "name": "request_acct",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config"
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_13in_1out",
+      "discriminator": [
+        126,
+        128,
+        133,
+        254,
+        194,
+        137,
+        198,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "in_d",
+          "writable": true
+        },
+        {
+          "name": "in_e",
+          "writable": true
+        },
+        {
+          "name": "in_f",
+          "writable": true
+        },
+        {
+          "name": "in_g",
+          "writable": true
+        },
+        {
+          "name": "in_h",
+          "writable": true
+        },
+        {
+          "name": "in_i",
+          "writable": true
+        },
+        {
+          "name": "in_j",
+          "writable": true
+        },
+        {
+          "name": "in_k",
+          "writable": true
+        },
+        {
+          "name": "in_l",
+          "writable": true
+        },
+        {
+          "name": "in_m",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_13in_4out",
+      "discriminator": [
+        126,
+        140,
+        218,
+        79,
+        117,
+        61,
+        116,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "in_d",
+          "writable": true
+        },
+        {
+          "name": "in_e",
+          "writable": true
+        },
+        {
+          "name": "in_f",
+          "writable": true
+        },
+        {
+          "name": "in_g",
+          "writable": true
+        },
+        {
+          "name": "in_h",
+          "writable": true
+        },
+        {
+          "name": "in_i",
+          "writable": true
+        },
+        {
+          "name": "in_j",
+          "writable": true
+        },
+        {
+          "name": "in_k",
+          "writable": true
+        },
+        {
+          "name": "in_l",
+          "writable": true
+        },
+        {
+          "name": "in_m",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "out_2",
+          "writable": true
+        },
+        {
+          "name": "out_3",
+          "writable": true
+        },
+        {
+          "name": "out_4",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_1order_4sides",
+      "discriminator": [
+        216,
+        72,
+        254,
+        177,
+        186,
+        205,
+        243,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "in_d",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "out_2",
+          "writable": true
+        },
+        {
+          "name": "out_3",
+          "writable": true
+        },
+        {
+          "name": "out_4",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_3in_1out_100ops",
+      "discriminator": [
+        249,
+        94,
+        55,
+        106,
+        216,
+        176,
+        238,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_3in_1out_15ops",
+      "discriminator": [
+        74,
+        174,
+        199,
+        249,
+        54,
+        201,
+        230,
+        174
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_3in_1out_50ops",
+      "discriminator": [
+        178,
+        49,
+        28,
+        100,
+        35,
+        149,
+        25,
+        179
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_3in_2out",
+      "discriminator": [
+        230,
+        35,
+        107,
+        195,
+        184,
+        13,
+        79,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "out_2",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_3in_4out",
+      "discriminator": [
+        167,
+        135,
+        240,
+        61,
+        225,
+        151,
+        238,
+        240
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "out_2",
+          "writable": true
+        },
+        {
+          "name": "out_3",
+          "writable": true
+        },
+        {
+          "name": "out_4",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_5in_1out",
+      "discriminator": [
+        17,
+        226,
+        39,
+        123,
+        120,
+        224,
+        160,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "in_d",
+          "writable": true
+        },
+        {
+          "name": "in_e",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_7in_1out",
+      "discriminator": [
+        246,
+        245,
+        25,
+        176,
+        170,
+        219,
+        228,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "in_d",
+          "writable": true
+        },
+        {
+          "name": "in_e",
+          "writable": true
+        },
+        {
+          "name": "in_f",
+          "writable": true
+        },
+        {
+          "name": "in_g",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_bisect_uint8_eq",
+      "discriminator": [
+        9,
+        194,
+        159,
+        183,
+        41,
+        125,
+        251,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "in_a",
+          "writable": true
+        },
+        {
+          "name": "in_b",
+          "writable": true
+        },
+        {
+          "name": "in_c",
+          "writable": true
+        },
+        {
+          "name": "out_1",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_fhe_batch",
+      "docs": [
+        "Run `settle_batch_graph` via Encrypt CPI.",
+        "",
+        "Accepts 13 input ciphertext accounts (4 orders × 3 fields + clearing",
+        "price) and 4 output ciphertexts — the FHE graph executes on",
+        "Encrypt's coprocessor and writes the aggregates to the output",
+        "accounts."
+      ],
+      "discriminator": [
+        80,
+        211,
+        181,
+        192,
+        97,
+        67,
+        18,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "o0_side_ct",
+          "writable": true
+        },
+        {
+          "name": "o0_limit_ct",
+          "writable": true
+        },
+        {
+          "name": "o0_amount_ct",
+          "writable": true
+        },
+        {
+          "name": "o1_side_ct",
+          "writable": true
+        },
+        {
+          "name": "o1_limit_ct",
+          "writable": true
+        },
+        {
+          "name": "o1_amount_ct",
+          "writable": true
+        },
+        {
+          "name": "o2_side_ct",
+          "writable": true
+        },
+        {
+          "name": "o2_limit_ct",
+          "writable": true
+        },
+        {
+          "name": "o2_amount_ct",
+          "writable": true
+        },
+        {
+          "name": "o3_side_ct",
+          "writable": true
+        },
+        {
+          "name": "o3_limit_ct",
+          "writable": true
+        },
+        {
+          "name": "o3_amount_ct",
+          "writable": true
+        },
+        {
+          "name": "clearing_price_ct",
+          "writable": true
+        },
+        {
+          "name": "yes_buy_vol_ct",
+          "writable": true
+        },
+        {
+          "name": "no_buy_vol_ct",
+          "writable": true
+        },
+        {
+          "name": "yes_sell_qty_ct",
+          "writable": true
+        },
+        {
+          "name": "no_sell_qty_ct",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "docs": [
+            "`execute_graph` ix requests writable access to it (op-budget update)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_poc_batch",
+      "docs": [
+        "Run the small `poc_yes_buy_fill` graph (3 inputs, 1 output).",
+        "Used to demonstrate live executor processing within the pre-alpha",
+        "service's small-graph processing envelope."
+      ],
+      "discriminator": [
+        199,
+        126,
+        13,
+        58,
+        80,
+        248,
+        87,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "limit_ct",
+          "writable": true
+        },
+        {
+          "name": "clearing_ct",
+          "writable": true
+        },
+        {
+          "name": "amount_ct",
+          "writable": true
+        },
+        {
+          "name": "fill_ct",
+          "writable": true
+        },
+        {
+          "name": "encrypt_program"
+        },
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "deposit",
+          "writable": true
+        },
+        {
+          "name": "cpi_authority"
+        },
+        {
+          "name": "caller_program"
+        },
+        {
+          "name": "network_encryption_key"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cpi_authority_bump",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "BatchSettlementRecord",
+      "discriminator": [
+        131,
+        179,
+        80,
+        155,
+        253,
+        230,
+        189,
+        233
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "Unauthorized",
+      "msg": "Unauthorized — only the record authority can call this"
+    },
+    {
+      "code": 6001,
+      "name": "DecryptionIncomplete",
+      "msg": "Decryption has not been attested yet by Encrypt's aggregator network"
+    }
+  ],
+  "types": [
+    {
+      "name": "BatchSettlementRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "batch_index",
+            "type": "u64"
+          },
+          {
+            "name": "yes_buy_vol_ct",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "no_buy_vol_ct",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "yes_sell_qty_ct",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "no_sell_qty_ct",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "pending_decryption_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "revealed_yes_buy",
+            "type": "u64"
+          },
+          {
+            "name": "revealed_no_buy",
+            "type": "u64"
+          },
+          {
+            "name": "revealed_yes_sell",
+            "type": "u64"
+          },
+          {
+            "name": "revealed_no_sell",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -228,6 +228,10 @@ export class SolanaClient {
     relayerUsdcAta: PublicKey,
     relayerYesAta: PublicKey,
     relayerNoAta: PublicKey,
+    // Poseidon commitment_root — must match the value the ZK batch circuit
+    // uses as its public input, since settle_batch verifies the Groth16 proof
+    // against it.
+    commitmentRoot: number[],
   ): Promise<string> {
     const [market] = this.marketPda(marketId);
     const [batch] = this.batchPda(marketId, batchIndex);
@@ -249,6 +253,7 @@ export class SolanaClient {
         new anchor.BN(noGap.toString()),
         new anchor.BN(finalExcessYes.toString()),
         new anchor.BN(finalExcessNo.toString()),
+        commitmentRoot,
       )
       .accounts({
         market,
@@ -284,6 +289,7 @@ export class SolanaClient {
     relayerUsdcAta: PublicKey,
     relayerYesAta: PublicKey,
     relayerNoAta: PublicKey,
+    orderCount: number,
   ): Promise<string> {
     const [market] = this.marketPda(marketId);
     const [batch] = this.batchPda(marketId, batchIndex);
@@ -297,6 +303,7 @@ export class SolanaClient {
         proofA,
         proofB,
         proofC,
+        orderCount,
       )
       .accounts({
         market,
@@ -330,6 +337,9 @@ export class SolanaClient {
     proofB: number[],
     proofC: number[],
     recipientAccount: PublicKey,
+    // Field-element-encoded recipient owner pubkey (BE 32 bytes, < BN254 scalar).
+    // Must match the `recipient` public input used when generating the proof.
+    recipientField: number[],
   ): Promise<string> {
     const [market] = this.marketPda(marketId);
     const [batch] = this.batchPda(marketId, batchIndex);
@@ -348,6 +358,7 @@ export class SolanaClient {
         proofA,
         proofB,
         proofC,
+        recipientField,
       )
       .accounts({
         market,

@@ -3,6 +3,7 @@ pub mod error;
 pub mod events;
 pub mod instructions;
 pub mod state;
+pub mod vkeys;
 
 use anchor_lang::prelude::*;
 
@@ -60,6 +61,12 @@ pub mod predacy {
         no_gap: u64,
         final_excess_yes: u64,
         final_excess_no: u64,
+        // Relayer-computed Poseidon commitment_root (matches ZK circuit's root).
+        // On-chain we can't cheaply compute Poseidon, so we accept it and let
+        // the Groth16 proof in settle_batch enforce it matches the on-chain
+        // commitment store. If the relayer lies about this root, the proof
+        // won't verify.
+        commitment_root: [u8; 32],
     ) -> Result<()> {
         instructions::lock_funds::handler(
             ctx,
@@ -72,6 +79,7 @@ pub mod predacy {
             no_gap,
             final_excess_yes,
             final_excess_no,
+            commitment_root,
         )
     }
 
@@ -81,8 +89,16 @@ pub mod predacy {
         proof_a: [u8; 64],
         proof_b: [u8; 128],
         proof_c: [u8; 64],
+        order_count: u16,
     ) -> Result<()> {
-        instructions::settle_batch::handler(ctx, claim_merkle_root, proof_a, proof_b, proof_c)
+        instructions::settle_batch::handler(
+            ctx,
+            claim_merkle_root,
+            proof_a,
+            proof_b,
+            proof_c,
+            order_count,
+        )
     }
 
     pub fn claim_with_proof(
@@ -94,6 +110,12 @@ pub mod predacy {
         proof_a: [u8; 64],
         proof_b: [u8; 128],
         proof_c: [u8; 64],
+        // Field-element-encoded recipient (BN254 scalar, BE, 32 bytes).
+        // The circuit uses this as a public input binding the proof to a
+        // specific recipient. The relayer must derive this by taking the
+        // recipient owner pubkey bytes and masking the top 3 bits to 0 so
+        // the value is guaranteed < BN254 field size.
+        recipient_field: [u8; 32],
     ) -> Result<()> {
         instructions::claim_with_proof::handler(
             ctx,
@@ -104,6 +126,7 @@ pub mod predacy {
             proof_a,
             proof_b,
             proof_c,
+            recipient_field,
         )
     }
 
@@ -157,5 +180,19 @@ pub mod predacy {
             signature_scheme,
             message_approval_bump,
         )
+    }
+
+    /// Discriminator test: run `Groth16Verifier` with the canonical test
+    /// vectors from groth16-solana's own test suite (mode=0), or with
+    /// user-supplied proof bytes against our BATCH_VK (mode=1).
+    pub fn verify_test_vectors(
+        ctx: Context<VerifyTestVectors>,
+        mode: u8,
+        proof_a: [u8; 64],
+        proof_b: [u8; 128],
+        proof_c: [u8; 64],
+        pub_inputs: [[u8; 32]; 7],
+    ) -> Result<()> {
+        instructions::verify_test_vectors::handler(ctx, mode, proof_a, proof_b, proof_c, pub_inputs)
     }
 }

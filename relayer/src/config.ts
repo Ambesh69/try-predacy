@@ -22,6 +22,29 @@ export interface Config {
   // Available on Hackathon plan for devnet; sub-100ms latency vs WebSocket.
   rpcFastGrpcApiKey?: string;
   rpcFastGrpcEnabled: boolean;
+  /**
+   * Batch-clearing privacy mode.
+   *   "fast"   (default) — relayer sees plaintext orders during the 30s
+   *                        batch window; clearing runs in plaintext.
+   *                        Privacy comes from Poseidon commitments +
+   *                        Groth16 (no observer outside the relayer learns
+   *                        order content until settlement).
+   *   "strict"           — orders arrive REFHE-encrypted; clearing runs
+   *                        on ciphertexts via `encryptedClearing.ts`; the
+   *                        relayer itself stays cryptographically blind
+   *                        until decrypting final aggregates.
+   *                        Settlement latency: ~45-60s end-to-end (30s
+   *                        batch window + 15-30s FHE clearing) vs fast
+   *                        mode's ~30s. Submit latency is the same in
+   *                        both modes.
+   */
+  privacyMode: "fast" | "strict" | "onchain-fhe";
+  /**
+   * FHE backend to use when `privacyMode=strict`. Currently only "mock" is
+   * implemented (`MockFheBackend` — transparent, for algorithm validation).
+   * When the Encrypt REFHE SDK ships, add "refhe" and select it here.
+   */
+  fheBackend: "mock";
 }
 
 export function loadConfig(): Config {
@@ -108,5 +131,12 @@ export function loadConfig(): Config {
     rpcFastEnabled,
     rpcFastGrpcApiKey,
     rpcFastGrpcEnabled,
+    privacyMode:
+      process.env.PRIVACY_MODE === "strict"
+        ? "strict"
+        : process.env.PRIVACY_MODE === "onchain-fhe"
+          ? "onchain-fhe"
+          : "fast",
+    fheBackend: "mock",
   };
 }
