@@ -39,6 +39,16 @@ export class GrpcStreamer extends EventEmitter {
     return this.config.rpcFastGrpcEnabled && !!this.config.rpcFastGrpcApiKey;
   }
 
+  /** True only when the napi client + subscribe-stream are both live. Useful
+   *  for /health to distinguish "config says on, TLS handshake actually works". */
+  get connected(): boolean {
+    return this.running && !!this.client && !!this.stream;
+  }
+
+  get reconnects(): number {
+    return this.reconnectAttempts;
+  }
+
   async start(): Promise<void> {
     if (!this.enabled) {
       console.log("[grpcStreamer] RPC_FAST_API_KEY not set — streaming disabled, falling back to polling");

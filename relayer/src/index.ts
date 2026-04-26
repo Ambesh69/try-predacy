@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import * as fs from "fs";
+import * as path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { loadConfig } from "./config";
 import { SolanaClient } from "./solanaClient";
@@ -67,9 +69,34 @@ app.use(cors());
 app.use(express.json());
 
 // ─── Health ───
+// Build identity — surfaced to /health so we know which deploy is live.
+// RAILWAY_GIT_COMMIT_SHA is auto-injected by Railway; falls back to
+// reading the synthetic .build-sha file written by Dockerfile if present.
+const BUILD_SHA = (() => {
+  if (process.env.RAILWAY_GIT_COMMIT_SHA) return process.env.RAILWAY_GIT_COMMIT_SHA.slice(0, 12);
+  try {
+    const f = path.join(__dirname, "..", ".build-sha");
+    if (fs.existsSync(f)) return fs.readFileSync(f, "utf-8").trim().slice(0, 12);
+  } catch { /* noop */ }
+  return "unknown";
+})();
+
+// Circuits artifact check — proves the Dockerfile copied /circuits/ into
+// the container. If false, snarkjs proof generation will crash with ENOENT.
+const CIRCUITS_OK = (() => {
+  try {
+    const wasm = path.join(config.circuitsPath, "batch_clearing/batch_clearing_js/batch_clearing.wasm");
+    const zkey = path.join(config.circuitsPath, "setup/batch_clearing_final.zkey");
+    return fs.existsSync(wasm) && fs.existsSync(zkey);
+  } catch {
+    return false;
+  }
+})();
+
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
+    build: BUILD_SHA,
     relayer: config.relayerKeypair.publicKey.toBase58(),
     programId: config.programId,
     useRealZk: config.useRealZk,
@@ -78,6 +105,10 @@ app.get("/health", (_req, res) => {
     rpcFastEnabled: config.rpcFastEnabled,
     logStreaming: true,
     grpcStreaming: config.rpcFastGrpcEnabled && grpcStreamer.enabled,
+    grpcConnected: grpcStreamer.connected,
+    grpcReconnects: grpcStreamer.reconnects,
+    circuitsOk: CIRCUITS_OK,
+    circuitsPath: config.circuitsPath,
     feeSponsorship: {
       available: true,
       ratePerMinute: FEE_RATE_LIMIT_PER_MIN,
