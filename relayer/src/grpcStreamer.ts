@@ -176,6 +176,15 @@ export class GrpcStreamer extends EventEmitter {
   private scheduleReconnect(): void {
     if (!this.running) return;
     this.reconnectAttempts += 1;
+    // Circuit-breaker: after 5 consecutive failures, give up. The WSS
+    // log streamer is the primary path; gRPC was an opt-in latency
+    // upgrade. If the gRPC endpoint is unreachable (auth, allowlist,
+    // entitlement), spamming reconnects forever just pollutes logs.
+    if (this.reconnectAttempts > 5) {
+      console.warn("[grpcStreamer] Giving up after 5 failed reconnects — falling back to WSS log streamer (primary path)");
+      this.running = false;
+      return;
+    }
     // Exponential backoff, cap at 30s
     const delay = Math.min(30_000, 1_000 * Math.pow(2, this.reconnectAttempts));
     console.log(`[grpcStreamer] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
