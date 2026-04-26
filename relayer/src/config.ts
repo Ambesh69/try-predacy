@@ -65,7 +65,9 @@ export function loadConfig(): Config {
   const rpcFastWssUrl = process.env.RPC_FAST_WSS_URL || "wss://sol-devnet-rpc.rpcfast.com";
   // Yellowstone gRPC defaults to devnet — override RPC_FAST_YELLOWSTONE_URL for mainnet.
   // NB: triton-one Yellowstone (napi-rs) wants bare host:port, no `https://` prefix.
-  const rpcFastYellowstoneUrl = process.env.RPC_FAST_YELLOWSTONE_URL || "sol-devnet-yellowstone-grpc.rpcfast.com:443";
+  // .trim() defends against trailing-whitespace pastes in Railway env vars —
+  // `napi`'s Yellowstone binding rejects "host:443\n" as invalid TLS.
+  const rpcFastYellowstoneUrl = (process.env.RPC_FAST_YELLOWSTONE_URL || "sol-devnet-yellowstone-grpc.rpcfast.com:443").trim();
   const rpcFastGrpcApiKey = process.env.RPC_FAST_GRPC_API_KEY || undefined;
   const rpcFastEnabled = !!rpcFastApiKey;
   // gRPC is opt-in; requires its own key (separate RPC Fast app).

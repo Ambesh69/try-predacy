@@ -30,10 +30,12 @@ export const RPC_FAST_GRPC_API_KEY =
 /** RPC Fast Yellowstone gRPC endpoint. NB: `@triton-one/yellowstone-grpc`'s
  *  napi-rs client rejects `https://` prefix with "invalid TLS configuration".
  *  Bare `host:port` is what the Rust binding expects — TLS is implied by
- *  port 443 + the channel options. */
-export const RPC_FAST_YELLOWSTONE_URL =
+ *  port 443 + the channel options.  `.trim()` handles trailing-newline
+ *  pastes in env vars (which produce the same TLS error). */
+export const RPC_FAST_YELLOWSTONE_URL = (
   process.env.RPC_FAST_YELLOWSTONE_URL ||
-  "sol-devnet-yellowstone-grpc.rpcfast.com:443";
+  "sol-devnet-yellowstone-grpc.rpcfast.com:443"
+).trim();
 
 /** Encrypt's pre-alpha coprocessor gRPC endpoint (CreateInput / ReadCiphertext). */
 export const ENCRYPT_GRPC_URL = "pre-alpha-dev-1.encrypt.ika-network.net:443";

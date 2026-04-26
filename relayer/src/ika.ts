@@ -369,7 +369,10 @@ export class IkaManager {
       process.env.IKA_STORE_PATH || path.join(path.dirname(config.idlPath), "..", "ika-dwallets.json"),
     );
     this.ikaProgramId = new PublicKey(process.env.IKA_PROGRAM_ID || IKA_PROGRAM_ID);
-    this.grpcUrl = process.env.IKA_GRPC_URL || IKA_GRPC_URL;
+    // .trim() defends against the classic Railway env-paste bug where a
+    // trailing newline sneaks in and the napi gRPC binding rejects it as
+    // "invalid TLS configuration".
+    this.grpcUrl = (process.env.IKA_GRPC_URL || IKA_GRPC_URL).trim();
     this.store = this.loadStore();
   }
 
