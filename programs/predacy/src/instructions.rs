@@ -1,4 +1,5 @@
 pub mod initialize;
+pub mod create_event_handle;
 pub mod create_market;
 pub mod open_batch;
 pub mod commit_order;
@@ -15,6 +16,7 @@ pub mod approve_ika_message;
 pub mod verify_test_vectors;
 
 pub use initialize::*;
+pub use create_event_handle::*;
 pub use create_market::*;
 pub use open_batch::*;
 pub use commit_order::*;

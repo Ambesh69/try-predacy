@@ -25,6 +25,36 @@ pub mod predacy {
         instructions::create_market::handler(ctx, market_id)
     }
 
+    /// Create an EventHandle PDA — the unit of LP commitment that downstream
+    /// markets inherit fee and graduation parameters from. See
+    /// docs/LIQUIDITY.md §4 for the full design rationale.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_event_handle(
+        ctx: Context<CreateEventHandle>,
+        handle_id: [u8; 32],
+        category: u8,
+        closes_at: i64,
+        graduation_threshold_usdc: u64,
+        graduation_batches: u8,
+        fee_bps_taker: u16,
+        fee_bps_treasury: u16,
+        fee_bps_rebates: u16,
+        bootstrap_seed_usdc: u64,
+    ) -> Result<()> {
+        instructions::create_event_handle::handler(
+            ctx,
+            handle_id,
+            category,
+            closes_at,
+            graduation_threshold_usdc,
+            graduation_batches,
+            fee_bps_taker,
+            fee_bps_treasury,
+            fee_bps_rebates,
+            bootstrap_seed_usdc,
+        )
+    }
+
     pub fn open_batch(ctx: Context<OpenBatch>) -> Result<()> {
         instructions::open_batch::handler(ctx)
     }

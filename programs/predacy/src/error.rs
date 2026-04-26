@@ -40,4 +40,12 @@ pub enum PredacyError {
     InvalidMarketId,
     #[msg("Batch does not belong to this market")]
     BatchMarketMismatch,
+    #[msg("Invalid event category — must be 0..=4")]
+    InvalidEventCategory,
+    #[msg("Invalid event timing — closes_at must be in the future")]
+    InvalidEventTiming,
+    #[msg("Invalid fee parameters — treasury+rebates must equal taker bps")]
+    InvalidEventFees,
+    #[msg("EventHandle already closed")]
+    EventClosed,
 }

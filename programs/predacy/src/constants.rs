@@ -20,6 +20,8 @@ pub const USDC_VAULT_SEED: &[u8] = b"usdc_vault";
 pub const YES_VAULT_SEED: &[u8] = b"yes_vault";
 #[constant]
 pub const NO_VAULT_SEED: &[u8] = b"no_vault";
+#[constant]
+pub const EVENT_HANDLE_SEED: &[u8] = b"event";
 
 pub const PRICE_DECIMALS: u64 = 1_000_000;
 pub const DEFAULT_BATCH_WINDOW: u64 = 30;

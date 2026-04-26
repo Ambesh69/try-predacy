@@ -151,3 +151,71 @@ pub struct CommitmentEntry {
 pub struct Nullifier {
     pub bump: u8,
 }
+
+// ─── EventHandle (Liquidity Stack — see docs/LIQUIDITY.md §4) ───
+//
+// Unit of LP commitment. One EventHandle covers many markets:
+//   - "hcl-2026-04-29"                → all hand-by-hand markets in tonight's HCL stream
+//   - "triton-vegas-100k-day1"        → all markets for that tournament day
+//   - "btc-15min-window-2026-04-26-T" → 96 daily 15-min crypto markets
+//
+// LPs commit capital under a handle, not per market. Capital auto-refunds at
+// `closes_at`. Fee/graduation params are inherited by every market under the
+// handle. A market reads its handle's params when computing settlement.
+
+// Discriminants are implicit and sequential (0..=4) — keep this match
+// in sync with from_u8 below if order changes. Order is ABI-stable.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EventCategory {
+    LiveStream, // 0 — Poker streams, esports tournaments, talk shows
+    Sports,     // 1 — Match-scale event markets
+    Crypto,     // 2 — 15-min / hourly / daily price windows
+    Politics,   // 3 — Day-to-week scale resolution
+    Custom,     // 4 — Operator-defined
+}
+
+impl EventCategory {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(EventCategory::LiveStream),
+            1 => Some(EventCategory::Sports),
+            2 => Some(EventCategory::Crypto),
+            3 => Some(EventCategory::Politics),
+            4 => Some(EventCategory::Custom),
+            _ => None,
+        }
+    }
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct EventHandle {
+    /// 32-byte stable id, e.g. blake3(canonical_event_label).
+    pub handle_id: [u8; 32],
+    /// EventCategory, encoded as u8 for ABI stability.
+    pub category: u8,
+    /// Operator who can close/refund the event early.
+    pub authority: Pubkey,
+    pub created_at: i64,
+    /// Unix seconds. Tier 1 LP capital auto-refunds after this timestamp.
+    pub closes_at: i64,
+    /// Cumulative volume across batches this event must hit before
+    /// graduation (Tier 1 backstop activates).
+    pub graduation_threshold_usdc: u64,
+    /// Number of consecutive batches that each must clear at least
+    /// graduation_threshold_usdc / graduation_batches volume.
+    pub graduation_batches: u8,
+    /// Fee bps charged on filled volume by takers. Default 30.
+    pub fee_bps_taker: u16,
+    /// Of the taker fee, this slice goes to protocol treasury. Default 10.
+    pub fee_bps_treasury: u16,
+    /// Of the taker fee, this slice funds the maker-rebate pool. Default 20.
+    pub fee_bps_rebates: u16,
+    /// Bootstrap-pool seed in 6-decimal USDC. Protocol-funded per market
+    /// under this handle. Default 100_000_000 = $100.
+    pub bootstrap_seed_usdc: u64,
+    /// Set to true once the operator closes the event. Triggers refund flow.
+    pub closed: bool,
+    pub bump: u8,
+}
