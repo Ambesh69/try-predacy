@@ -8,11 +8,30 @@
  * Activates only when RPC_FAST_API_KEY is set. Falls back to a no-op streamer
  * when the API key is absent — existing polling-based flow continues to work.
  *
- * Docs: https://docs.rpcfast.com/rpc-fast-saas-solana/data-streaming
+ * Implementation note (2026-04-26):
+ * We tried `@triton-one/yellowstone-grpc` (the official client). Its napi-rs
+ * Rust binding fails to connect to RPC Fast's Yellowstone endpoint with a
+ * generic "failed to connect to gRPC endpoint" — likely because tonic's
+ * default TLS/HTTP2 settings don't match what RPC Fast's edge expects.
+ * Pure-JS `@grpc/grpc-js` connects fine against the same URL+token, so we
+ * load `geyser.proto` ourselves and call `Subscribe` directly.
+ *
+ * Docs: https://docs.rpcfast.com/solana-dedicated-nodes/yellowstone-grpc
  */
 
 import { EventEmitter } from "events";
+import * as path from "path";
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
 import { Config } from "./config";
+
+// CommitmentLevel values map directly to the geyser.proto enum. Hardcoded
+// here so we don't have to import from the napi-only @triton-one package.
+enum CommitmentLevel {
+  PROCESSED = 0,
+  CONFIRMED = 1,
+  FINALIZED = 2,
+}
 
 // Event names emitted by the streamer. Consumers (HTTP SSE, batch processor,
 // etc) subscribe to these to react to on-chain state changes.
@@ -71,36 +90,55 @@ export class GrpcStreamer extends EventEmitter {
 
   private async connect(): Promise<void> {
     try {
-      // Lazy import — only require the gRPC client when actually using it,
-      // so the relayer starts fine without the dependency resolved for
-      // users who don't have RPC Fast configured.
-      const { default: Client, CommitmentLevel } = await import("@triton-one/yellowstone-grpc") as any;
+      // Locate geyser.proto next to the compiled relayer (we copy the .proto
+      // files into /app/proto/ at Docker build time). __dirname resolves to
+      // /app/dist when compiled, so ../proto = /app/proto.
+      const protoPath = path.resolve(__dirname, "..", "proto", "geyser.proto");
+      const includeDirs = [path.resolve(__dirname, "..", "proto")];
+      const packageDef = protoLoader.loadSync(protoPath, {
+        keepCase: false,
+        longs: Number,      // slots/timestamps as JS numbers
+        enums: Number,
+        defaults: true,
+        oneofs: true,
+        includeDirs,
+      });
+      const geyser: any = grpc.loadPackageDefinition(packageDef).geyser;
 
-      const channelOptions = {
-        grpcHttp2KeepAliveInterval: 30_000,
-        grpcKeepAliveTimeout: 10_000,
-        grpcKeepAliveWhileIdle: true,
-        grpcTcpKeepalive: 1,
-      };
-
-      this.client = new Client(
-        this.config.rpcFastYellowstoneUrl,
-        this.config.rpcFastGrpcApiKey!,
-        channelOptions,
+      // Auth: send the API key as `x-token` metadata on every call. Combine
+      // with TLS channel creds so the metadata generator runs per-RPC.
+      const apiKey = this.config.rpcFastGrpcApiKey!;
+      const callCreds = grpc.credentials.createFromMetadataGenerator((_, cb) => {
+        const meta = new grpc.Metadata();
+        meta.add("x-token", apiKey);
+        cb(null, meta);
+      });
+      const channelCreds = grpc.credentials.combineChannelCredentials(
+        grpc.credentials.createSsl(),
+        callCreds,
       );
 
-      console.log(`[grpcStreamer] Connecting to ${this.config.rpcFastYellowstoneUrl}...`);
-      // Yellowstone client requires explicit connect() before subscribe().
-      // Missing this was the cause of "Client not connected" on first boot.
-      await this.client.connect();
-      this.stream = await this.client.subscribe();
+      const url = this.config.rpcFastYellowstoneUrl;
+      console.log(`[grpcStreamer] Connecting to ${url}... (pure-JS @grpc/grpc-js)`);
+      this.client = new geyser.Geyser(url, channelCreds, {
+        "grpc.keepalive_time_ms": 30_000,
+        "grpc.keepalive_timeout_ms": 10_000,
+        "grpc.keepalive_permit_without_calls": 1,
+      });
 
-      // Subscribe to all transactions that reference the Predacy program.
-      // Yellowstone filters server-side, so we only receive relevant txs.
-      //
-      // IMPORTANT: every filter field must be present (even empty). The
-      // napi binding iterates over all of them and crashes with "Cannot
-      // convert undefined or null to object" if any key is missing.
+      // waitForReady so we know the channel is up before opening Subscribe.
+      await new Promise<void>((resolve, reject) => {
+        const deadline = new Date();
+        deadline.setSeconds(deadline.getSeconds() + 10);
+        this.client.waitForReady(deadline, (err: Error | null) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+
+      // Subscribe is bidi-streaming. The first message we write is the
+      // SubscribeRequest filter; subsequent server messages are SubscribeUpdate.
+      this.stream = this.client.subscribe();
+
       const request = {
         accounts: {},
         slots: {},
@@ -127,8 +165,7 @@ export class GrpcStreamer extends EventEmitter {
 
       await new Promise<void>((resolve, reject) => {
         this.stream.write(request, (err: Error | null) => {
-          if (err) reject(err);
-          else resolve();
+          if (err) reject(err); else resolve();
         });
       });
 
