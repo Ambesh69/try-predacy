@@ -32,19 +32,15 @@ export class SolanaClient {
   constructor(config: Config) {
     // Pass X-Token auth header when using RPC Fast. Falls back to plain
     // connection for local/public RPC.
-    const httpHeaders = config.rpcFastEnabled && config.rpcFastApiKey
-      ? { "X-Token": config.rpcFastApiKey }
-      : undefined;
-    // Build WSS URL with API key for RPC Fast (authenticated WebSocket
-    // subscriptions). Key is passed as query param on WSS since browsers
-    // can't set custom headers on WebSocket.
-    const wsEndpoint = config.rpcFastEnabled && config.rpcFastApiKey && config.solanaWssUrl
-      ? `${config.solanaWssUrl}/?api_key=${config.rpcFastApiKey}`
-      : config.solanaWssUrl;
+    // RPC Fast auth: the API key already lives in the URLs (config.ts'
+    // appendApiKey adds it to both http + wss endpoints). The previous
+    // version of this file double-appended `/?api_key=...` to wsEndpoint
+    // which produced `wss://host?api_key=K/?api_key=K` and triggered 401
+    // ws errors at handshake. The X-Token header was also a no-op since
+    // RPC Fast keys come in via query string only — drop both.
     this.connection = new Connection(config.solanaRpcUrl, {
       commitment: "confirmed",
-      httpHeaders,
-      wsEndpoint,
+      wsEndpoint: config.solanaWssUrl,
     });
     this.relayer = config.relayerKeypair;
     this.programId = new PublicKey(config.programId);
