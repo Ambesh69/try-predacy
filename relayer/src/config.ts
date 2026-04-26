@@ -61,8 +61,21 @@ export function loadConfig(): Config {
   //   RPC_FAST_HTTP_URL=https://solana-rpc.rpcfast.com/
   //   RPC_FAST_WSS_URL=wss://solana-rpc.rpcfast.com/
   const rpcFastApiKey = process.env.RPC_FAST_API_KEY || undefined;
-  const rpcFastHttpUrl = process.env.RPC_FAST_HTTP_URL || "https://sol-devnet-rpc.rpcfast.com";
-  const rpcFastWssUrl = process.env.RPC_FAST_WSS_URL || "wss://sol-devnet-rpc.rpcfast.com";
+  // RPC Fast HTTP/WSS auth: the API key MUST be in the URL as `?api_key=...`,
+  // not in a header. Without it, unauthenticated devnet requests get routed
+  // to a public fallback that doesn't count against your plan (so the dashboard
+  // shows zero traffic even though calls "work").  If the user sets
+  // RPC_FAST_HTTP_URL/RPC_FAST_WSS_URL explicitly we trust their value as-is.
+  const rpcFastBaseHttp = process.env.RPC_FAST_HTTP_URL || "https://sol-devnet-rpc.rpcfast.com";
+  const rpcFastBaseWss  = process.env.RPC_FAST_WSS_URL  || "wss://sol-devnet-rpc.rpcfast.com";
+  const appendApiKey = (url: string, key?: string) => {
+    if (!key) return url;
+    if (url.includes("api_key=")) return url; // already present
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url.replace(/\/$/, "")}${sep}api_key=${key}`;
+  };
+  const rpcFastHttpUrl = appendApiKey(rpcFastBaseHttp, rpcFastApiKey);
+  const rpcFastWssUrl  = appendApiKey(rpcFastBaseWss,  rpcFastApiKey);
   // Yellowstone gRPC defaults to devnet — override RPC_FAST_YELLOWSTONE_URL for mainnet.
   // NB: triton-one Yellowstone (napi-rs) wants bare host:port, no `https://` prefix.
   // .trim() defends against trailing-whitespace pastes in Railway env vars —
