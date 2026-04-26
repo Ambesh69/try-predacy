@@ -776,6 +776,15 @@ app.get("/settlement-stats", (req, res) => {
   res.json({ recent: processor.listSettlementStats() });
 });
 
+// Idempotency index: maps (marketId, batchId, salt) → jobId so duplicate
+// POSTs return the existing job instead of starting a second snarkjs proof.
+// Frontend has at least one path where PositionsPanel is mounted twice (in
+// MarketPageClient + EventPageClient), so a single user-click can fan out
+// to two POSTs. Deduping here makes the backend idempotent regardless.
+const claimDedupKey = (marketIdHex: string, batchId: bigint, salt: bigint) =>
+  `${marketIdHex.toLowerCase().replace(/^0x/, "")}|${batchId.toString()}|${salt.toString()}`;
+const claimJobByKey = new Map<string, string>();
+
 // ─── Claim Proof (Async) ───
 app.post("/claim-proof", async (req, res) => {
   try {
@@ -788,6 +797,21 @@ app.post("/claim-proof", async (req, res) => {
       salt,
       recipient,
     } = req.body;
+
+    // Dedup: if a job for this (marketId, batchId, salt) is already running
+    // or done, return its jobId. salt is the user-private nonce so it's a
+    // strong identifier for "this user's claim of this position".
+    const dedupKey = claimDedupKey(marketId, BigInt(batchId), BigInt(salt));
+    const existingId = claimJobByKey.get(dedupKey);
+    if (existingId) {
+      const existing = claimJobs.get(existingId);
+      if (existing && existing.status !== "error") {
+        console.log(`[POST /claim-proof] dedup hit → reusing job ${existingId} (status=${existing.status})`);
+        return res.status(202).json({ ok: true, jobId: existingId, deduped: true });
+      }
+      // Previous attempt errored — clear and let a new job try.
+      claimJobByKey.delete(dedupKey);
+    }
 
     const jobId = uuidv4();
     const job: ClaimJob = {
@@ -803,6 +827,7 @@ app.post("/claim-proof", async (req, res) => {
     };
 
     claimJobs.set(jobId, job);
+    claimJobByKey.set(dedupKey, jobId);
     res.status(202).json({ ok: true, jobId });
 
     // Process claim in background
