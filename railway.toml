@@ -2,12 +2,13 @@
 # Dockerfile can COPY both `relayer/` AND `circuits/` into the image.
 # (Required for USE_REAL_ZK=true: snarkjs needs circuit wasm + zkey at /circuits.)
 #
-# IMPORTANT: After merging this, in Railway dashboard → service → Settings →
-# Source → set "Root Directory" to empty (or "/") so this file is picked up
-# and the Dockerfile path resolves correctly.
+# IMPORTANT NOTE on Railway's "builder" field: it does NOT have a "DOCKERFILE"
+# enum — valid values are NIXPACKS / RAILPACK / PAKETO / HEROKU. To use a
+# Dockerfile, leave `builder` at the default (RAILPACK) and set
+# `dockerfilePath` — Railway's auto-detection switches to Docker mode when
+# this is non-null.
 
 [build]
-builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
