@@ -35,6 +35,10 @@ pub const LMSR_ALPHA_BPS: u64 = 14_400;
 pub const LP_VAULT_SEED: &[u8] = b"lpvault";
 #[constant]
 pub const LP_POSITION_SEED: &[u8] = b"lppos";
+#[constant]
+pub const MAKER_REBATE_POOL_SEED: &[u8] = b"rebate";
+#[constant]
+pub const MAKER_CREDIT_SEED: &[u8] = b"credit";
 
 /// Reserved space for FHE-encrypted aggregate vault state. Sized so an
 /// Encrypt EUint64 ciphertext (≈700-900 bytes typical) fits with margin.

@@ -230,6 +230,50 @@ pub struct LPVault {
     pub bump: u8,
 }
 
+// ─── MakerRebatePool + MakerCredit (Liquidity Stack — Tier 2, §5.3) ───
+//
+// Per-EventHandle pool that accumulates `fee_bps_rebates` of taker fees
+// across every settled batch under that event. Makers (limit-order
+// participants whose orders absorbed taker volume) earn pro-rata credit
+// against the pool. At event close, makers claim their share:
+//
+//     payout = my_credit / total_credits × pool_usdc_balance
+//
+// Funding model: anyone can transfer USDC to the pool's PDA-owned token
+// account (deposit-only). Withdrawals only happen via claim_maker_rebate.
+//
+// PDA derivation:
+//   MakerRebatePool [b"rebate", event_handle.key().as_ref()]
+//   MakerCredit     [b"credit", pool.key().as_ref(), maker.key().as_ref()]
+
+#[account]
+#[derive(InitSpace)]
+pub struct MakerRebatePool {
+    pub event_handle: Pubkey,
+    /// Cumulative USDC routed into the pool. Used for accounting/UI;
+    /// actual payouts read the live token-account balance.
+    pub accrued_taker_fees_usdc: u64,
+    /// Sum of all maker credits accrued under this pool. Used as the
+    /// denominator in claim_maker_rebate's pro-rata math.
+    pub total_credits: u64,
+    /// Set true at event end. Only after closed=true can makers claim.
+    pub closed: bool,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct MakerCredit {
+    pub pool: Pubkey,
+    pub maker: Pubkey,
+    /// Cumulative credit. Per-fill credits are added on accrue_maker_credit.
+    /// Future v2: weight by `volume × distance_from_mid_bps` for sharper
+    /// price-improvement incentives (Limitless pattern).
+    pub credit: u64,
+    pub claimed: bool,
+    pub bump: u8,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct LPPosition {

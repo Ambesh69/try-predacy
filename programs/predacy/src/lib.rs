@@ -118,6 +118,41 @@ pub mod predacy {
         instructions::withdraw_lp_capital::handler(ctx)
     }
 
+    // ─── Liquidity Stack — Tier 2 (Maker Rebates) ───
+    // See docs/LIQUIDITY.md §5.3.
+
+    /// Stand up the rebate pool for an EventHandle. Operator-only.
+    pub fn init_rebate_pool(ctx: Context<InitRebatePool>) -> Result<()> {
+        instructions::init_rebate_pool::handler(ctx)
+    }
+
+    /// Relayer credits a maker for absorbing taker volume in a settled
+    /// batch. Tops up an existing credit or creates a fresh one (init_if_needed).
+    pub fn accrue_maker_credit(
+        ctx: Context<AccrueMakerCredit>,
+        maker: Pubkey,
+        credit: u64,
+    ) -> Result<()> {
+        instructions::accrue_maker_credit::handler(ctx, maker, credit)
+    }
+
+    /// Maker withdraws their pro-rata share of the closed rebate pool.
+    pub fn claim_maker_rebate(ctx: Context<ClaimMakerRebate>) -> Result<()> {
+        instructions::claim_maker_rebate::handler(ctx)
+    }
+
+    /// Operator marks the rebate pool closed; required before claims start.
+    pub fn close_rebate_pool(ctx: Context<CloseRebatePool>) -> Result<()> {
+        instructions::claim_maker_rebate::close_handler(ctx)
+    }
+
+    /// Bookkeeping for off-chain SPL fee deposits into the pool ATA. Bumps
+    /// the `accrued_taker_fees_usdc` counter for UI/auditability. Token
+    /// transfer is a vanilla SPL ix outside this call.
+    pub fn log_rebate_deposit(ctx: Context<LogRebateDeposit>, amount: u64) -> Result<()> {
+        instructions::claim_maker_rebate::log_deposit_handler(ctx, amount)
+    }
+
     pub fn open_batch(ctx: Context<OpenBatch>) -> Result<()> {
         instructions::open_batch::handler(ctx)
     }
