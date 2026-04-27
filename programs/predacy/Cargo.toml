@@ -21,7 +21,10 @@ custom-panic = []
 
 
 [dependencies]
-anchor-lang = "1.0.0"
+# init-if-needed: lets commit_lp_capital lazily create the LP vault PDA
+# on first deposit + reuse it on later top-ups in the same window.
+# Re-init-attack guard is in commit_lp_capital.rs (`!position.withdrawn`).
+anchor-lang = { version = "1.0.0", features = ["init-if-needed"] }
 anchor-spl = { version = "1.0.0", features = ["token"] }
 solana-program = "3.0"
 bytemuck = { version = "1.14", features = ["derive"] }

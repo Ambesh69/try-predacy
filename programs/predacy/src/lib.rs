@@ -81,6 +81,43 @@ pub mod predacy {
         instructions::bootstrap_fill::set_graduated_handler(ctx, graduated)
     }
 
+    // ─── Liquidity Stack — Tier 1 (Blind LP, plaintext v1) ───
+    // See docs/LIQUIDITY.md §5.2.
+
+    /// LP deposits USDC under an EventHandle, receiving virtual shares
+    /// against the per-event LP vault. Capital auto-refunds at
+    /// `commitment_expires_at` via withdraw_lp_capital.
+    pub fn commit_lp_capital(
+        ctx: Context<CommitLpCapital>,
+        amount: u64,
+        commitment_expires_at: i64,
+    ) -> Result<()> {
+        instructions::commit_lp_capital::handler(ctx, amount, commitment_expires_at)
+    }
+
+    /// Relayer-attested per-batch state mutation. Records the LP vault's
+    /// signed inventory delta and accrued rebate share.
+    pub fn lp_settle_batch(
+        ctx: Context<LpSettleBatch>,
+        delta_yes_position: i64,
+        delta_no_position: i64,
+        rebate_share_usdc: u64,
+    ) -> Result<()> {
+        instructions::lp_settle_batch::handler(
+            ctx,
+            delta_yes_position,
+            delta_no_position,
+            rebate_share_usdc,
+        )
+    }
+
+    /// LP (or auto-refund crank) redeems a position after the commitment
+    /// window expires. Pro-rata payout from the vault's current USDC
+    /// balance.
+    pub fn withdraw_lp_capital(ctx: Context<WithdrawLpCapital>) -> Result<()> {
+        instructions::withdraw_lp_capital::handler(ctx)
+    }
+
     pub fn open_batch(ctx: Context<OpenBatch>) -> Result<()> {
         instructions::open_batch::handler(ctx)
     }

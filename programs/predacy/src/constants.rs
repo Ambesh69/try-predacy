@@ -31,6 +31,19 @@ pub const BOOTSTRAP_POOL_SEED: &[u8] = b"bootstrap";
 /// EventHandle in v2; constant here for v1.
 pub const LMSR_ALPHA_BPS: u64 = 14_400;
 
+#[constant]
+pub const LP_VAULT_SEED: &[u8] = b"lpvault";
+#[constant]
+pub const LP_POSITION_SEED: &[u8] = b"lppos";
+
+/// Reserved space for FHE-encrypted aggregate vault state. Sized so an
+/// Encrypt EUint64 ciphertext (≈700-900 bytes typical) fits with margin.
+/// v1 leaves this zeroed — v2 (Sprint 2) writes actual ciphertext bytes.
+pub const FHE_VAULT_STATE_RESERVED: usize = 1024;
+/// Reserved space for FHE-encrypted per-LP share balance. EUint32 ciphertext
+/// is smaller; 64 bytes fits an Encrypt EUint8/16 with margin.
+pub const FHE_LP_SHARES_RESERVED: usize = 64;
+
 pub const PRICE_DECIMALS: u64 = 1_000_000;
 pub const DEFAULT_BATCH_WINDOW: u64 = 30;
 pub const DEFAULT_MAX_ORDERS: u16 = 500;

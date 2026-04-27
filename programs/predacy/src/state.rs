@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::MAX_COMMITMENTS;
+use crate::constants::{FHE_LP_SHARES_RESERVED, FHE_VAULT_STATE_RESERVED, MAX_COMMITMENTS};
 
 // ─── Enums ───
 
@@ -186,6 +186,72 @@ impl EventCategory {
             _ => None,
         }
     }
+}
+
+// ─── LPVault + LPPosition (Liquidity Stack — Tier 1, docs/LIQUIDITY.md §5.2) ───
+//
+// Per-EventHandle vault that absorbs residual imbalance from each settled
+// batch in markets under that event. LPs deposit USDC for a fixed
+// commitment window (auto-refunds at `commitment_expires_at`); during the
+// window their proportional share of vault P&L accrues to their position.
+//
+// v1 ships PLAINTEXT: shares are public scalar values. v2 (Sprint 2) swaps
+// to FHE-encrypted shares using the reserved `fhe_*` blob fields below.
+// The on-chain layout reserves the bytes now so the v2 upgrade is a
+// no-redeploy state migration.
+//
+// PDA derivation:
+//   LPVault     [b"lpvault", event_handle.key().as_ref()]
+//   LPPosition  [b"lppos",   vault.key().as_ref(),  depositor.key().as_ref()]
+
+#[account]
+#[derive(InitSpace)]
+pub struct LPVault {
+    /// EventHandle this vault is bound to. Each event has exactly one vault.
+    pub event_handle: Pubkey,
+    /// Public aggregate of all deposits, 6-decimal USDC. Always plaintext —
+    /// transparency about total capital is a feature, not a privacy leak.
+    pub total_capital_usdc: u64,
+    /// Total virtual shares outstanding. Used to compute per-position pro-rata
+    /// payouts: payout = position.shares / total_shares × current vault NAV.
+    pub total_shares: u64,
+    /// Net inventory in YES tokens, signed. Positive = vault is long YES.
+    /// Updated each batch settlement when vault absorbs residual.
+    pub realized_yes_position: i64,
+    /// Net inventory in NO tokens, signed. Positive = vault is long NO.
+    pub realized_no_position: i64,
+    /// Accumulated rebate share earned across batches under this event,
+    /// 6-decimal USDC. Distributed pro-rata at withdraw time.
+    pub accumulated_rebates_usdc: u64,
+    /// Reserved blob for FHE-encrypted aggregate state (v2). Sized for a
+    /// full EUint64 ciphertext with margin. v1 = all zeros.
+    #[max_len(FHE_VAULT_STATE_RESERVED)]
+    pub fhe_encrypted_state: Vec<u8>,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct LPPosition {
+    pub vault: Pubkey,
+    pub depositor: Pubkey,
+    /// Plaintext share balance for v1. Becomes irrelevant in v2 once
+    /// `fhe_shares_ct` becomes the source of truth — but kept on-chain
+    /// for the migration window.
+    pub shares_plaintext: u64,
+    /// Reserved blob for FHE-encrypted share balance (v2). v1 = all zeros.
+    #[max_len(FHE_LP_SHARES_RESERVED)]
+    pub fhe_shares_ct: Vec<u8>,
+    /// 6-decimal USDC originally deposited. Used to compute breakeven /
+    /// PnL on the front-end without revealing share-level math.
+    pub deposited_usdc: u64,
+    pub deposited_at: i64,
+    /// Auto-refund cutoff. After this timestamp, withdraw_lp_capital can
+    /// be called by anyone (relayer crank or the LP themselves).
+    pub commitment_expires_at: i64,
+    /// Set true once withdrawn — prevents double-withdrawal.
+    pub withdrawn: bool,
+    pub bump: u8,
 }
 
 // ─── BootstrapPool (Liquidity Stack — Tier 0, see docs/LIQUIDITY.md §5.1) ───
