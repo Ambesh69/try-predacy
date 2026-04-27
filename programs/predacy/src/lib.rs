@@ -55,6 +55,32 @@ pub mod predacy {
         )
     }
 
+    /// Initialise a Tier 0 LMSR Bootstrap Pool for a specific market.
+    /// Caller must be the EventHandle authority. See docs/LIQUIDITY.md §5.1.
+    pub fn init_bootstrap_pool(ctx: Context<InitBootstrapPool>) -> Result<()> {
+        instructions::init_bootstrap_pool::handler(ctx)
+    }
+
+    /// Relayer-attested fill against the Tier 0 LMSR curve. Mutates curve
+    /// state; actual token settlement still flows through lock_funds.
+    /// Caller must be the EventHandle authority.
+    pub fn bootstrap_fill(
+        ctx: Context<BootstrapFill>,
+        side: u8,
+        qty_shares: u64,
+        usdc_paid: u64,
+        is_buy: bool,
+    ) -> Result<()> {
+        instructions::bootstrap_fill::handler(ctx, side, qty_shares, usdc_paid, is_buy)
+    }
+
+    /// Toggle a BootstrapPool's graduated flag. Used by the relayer once
+    /// Tier 1 capital crosses the EventHandle's graduation_threshold; can
+    /// be reverted if Tier 1 unexpectedly empties out.
+    pub fn set_bootstrap_graduated(ctx: Context<BootstrapFill>, graduated: bool) -> Result<()> {
+        instructions::bootstrap_fill::set_graduated_handler(ctx, graduated)
+    }
+
     pub fn open_batch(ctx: Context<OpenBatch>) -> Result<()> {
         instructions::open_batch::handler(ctx)
     }

@@ -188,6 +188,48 @@ impl EventCategory {
     }
 }
 
+// ─── BootstrapPool (Liquidity Stack — Tier 0, see docs/LIQUIDITY.md §5.1) ───
+//
+// Per-market LS-LMSR curve providing cold-start liquidity. Operator seeds
+// `seed_usdc` of protocol capital; pool quotes both YES and NO shares
+// against retail demand until Tier 1 capital activates ("graduated"). After
+// graduation, bootstrap_fill rejects further fills and the residual flow
+// goes to the Blind LP vault instead.
+//
+// LMSR math is computed off-chain by the relayer (see relayer/src/
+// bootstrapCurve.ts); on-chain we just track state transitions and enforce
+// invariants. The relayer's authority signature gates the fill ix.
+
+#[account]
+#[derive(InitSpace)]
+pub struct BootstrapPool {
+    /// Identifies the market this pool backstops.
+    pub market_id: [u8; 32],
+    /// EventHandle this pool was created under — for fee/graduation params.
+    pub event_handle: Pubkey,
+    /// Seed capital, 6-decimal USDC. Set once at init, immutable.
+    pub seed_usdc: u64,
+    /// Total collateral currently in the pool: seed + accrued buy-side
+    /// USDC − payouts. 6-decimal USDC.
+    pub current_q: u64,
+    /// LS-LMSR `b` parameter. Recomputed on each fill as α × current_q
+    /// where α = LMSR_ALPHA_BPS / 10_000. Storing it explicitly so the
+    /// off-chain pricer doesn't have to recompute it.
+    pub b_param: u64,
+    /// Outstanding YES shares (1 share = 1 USDC if YES wins). 6-decimal.
+    pub yes_shares: u64,
+    /// Outstanding NO shares. 6-decimal.
+    pub no_shares: u64,
+    /// Set by the relayer once the market hits the graduation threshold
+    /// (≥2 batches × ≥graduation_threshold_usdc). After this, bootstrap_fill
+    /// rejects all calls — Tier 1 LP vault takes over.
+    pub graduated: bool,
+    /// Cumulative realized pnl on closed positions, signed. Resolved at
+    /// market resolution by `redeem_outcome` flow.
+    pub realized_pnl: i64,
+    pub bump: u8,
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct EventHandle {

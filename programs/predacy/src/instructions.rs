@@ -1,5 +1,7 @@
 pub mod initialize;
 pub mod create_event_handle;
+pub mod init_bootstrap_pool;
+pub mod bootstrap_fill;
 pub mod create_market;
 pub mod open_batch;
 pub mod commit_order;
@@ -17,6 +19,8 @@ pub mod verify_test_vectors;
 
 pub use initialize::*;
 pub use create_event_handle::*;
+pub use init_bootstrap_pool::*;
+pub use bootstrap_fill::*;
 pub use create_market::*;
 pub use open_batch::*;
 pub use commit_order::*;
