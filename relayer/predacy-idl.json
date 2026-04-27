@@ -1,5 +1,5 @@
 {
-  "address": "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp",
+  "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY",
   "metadata": {
     "name": "predacy",
     "version": "0.1.0",
@@ -7,6 +7,97 @@
     "description": "Created with Anchor"
   },
   "instructions": [
+    {
+      "name": "accrue_maker_credit",
+      "docs": [
+        "Relayer credits a maker for absorbing taker volume in a settled",
+        "batch. Tops up an existing credit or creates a fresh one (init_if_needed)."
+      ],
+      "discriminator": [
+        84,
+        202,
+        66,
+        214,
+        128,
+        15,
+        17,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "rebate_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  98,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "maker_credit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rebate_pool"
+              },
+              {
+                "kind": "arg",
+                "path": "maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "maker",
+          "type": "pubkey"
+        },
+        {
+          "name": "credit",
+          "type": "u64"
+        }
+      ]
+    },
     {
       "name": "approve_ika_message",
       "docs": [
@@ -30,7 +121,7 @@
           "name": "ika_program",
           "docs": [
             "The Ika dWallet program. Identified by address to prevent confused-deputy",
-            "attacks \u2014 only the real Ika program can be invoked.",
+            "attacks — only the real Ika program can be invoked.",
             "is invoked via CPI; no data reads from this account."
           ],
           "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY"
@@ -39,14 +130,14 @@
           "name": "ika_coordinator",
           "docs": [
             "Ika's DWalletCoordinator PDA (seeds: [b\"dwallet_coordinator\"] in Ika's program).",
-            "Read-only \u2014 the Ika program reads the current epoch from it."
+            "Read-only — the Ika program reads the current epoch from it."
           ]
         },
         {
           "name": "message_approval",
           "docs": [
             "The MessageApproval PDA to create. Seeds are enforced by Ika's",
-            "approve_message validation on its end \u2014 we pass it as an unchecked",
+            "approve_message validation on its end — we pass it as an unchecked",
             "account writable. Ika will init it with status=Pending."
           ],
           "writable": true
@@ -151,6 +242,148 @@
       ]
     },
     {
+      "name": "bootstrap_fill",
+      "docs": [
+        "Relayer-attested fill against the Tier 0 LMSR curve. Mutates curve",
+        "state; actual token settlement still flows through lock_funds.",
+        "Caller must be the EventHandle authority."
+      ],
+      "discriminator": [
+        114,
+        165,
+        166,
+        41,
+        222,
+        66,
+        241,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "bootstrap_pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "side",
+          "type": "u8"
+        },
+        {
+          "name": "qty_shares",
+          "type": "u64"
+        },
+        {
+          "name": "usdc_paid",
+          "type": "u64"
+        },
+        {
+          "name": "is_buy",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "claim_maker_rebate",
+      "docs": [
+        "Maker withdraws their pro-rata share of the closed rebate pool."
+      ],
+      "discriminator": [
+        228,
+        244,
+        145,
+        93,
+        1,
+        49,
+        248,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "rebate_pool",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  98,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "maker_credit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  101,
+                  100,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "rebate_pool"
+              },
+              {
+                "kind": "account",
+                "path": "maker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_usdc",
+          "docs": [
+            "Pool's USDC token account. PDA-owned by `rebate_pool`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "maker_usdc",
+          "docs": [
+            "Maker's USDC destination — typically their ATA."
+          ],
+          "writable": true
+        },
+        {
+          "name": "maker",
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "claim_position",
       "discriminator": [
         168,
@@ -251,7 +484,7 @@
         {
           "name": "nullifier",
           "docs": [
-            "Nullifier PDA \u2014 init fails if already exists (double-claim prevention)"
+            "Nullifier PDA — init fails if already exists (double-claim prevention)"
           ],
           "writable": true,
           "pda": {
@@ -292,7 +525,7 @@
         {
           "name": "recipient_account",
           "docs": [
-            "Recipient's token account for payout (can be any wallet \u2014 privacy)"
+            "Recipient's token account for payout (can be any wallet — privacy)"
           ],
           "writable": true
         },
@@ -419,6 +652,175 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "close_rebate_pool",
+      "docs": [
+        "Operator marks the rebate pool closed; required before claims start."
+      ],
+      "discriminator": [
+        202,
+        149,
+        6,
+        57,
+        186,
+        69,
+        27,
+        17
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "rebate_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  98,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "commit_lp_capital",
+      "docs": [
+        "LP deposits USDC under an EventHandle, receiving virtual shares",
+        "against the per-event LP vault. Capital auto-refunds at",
+        "`commitment_expires_at` via withdraw_lp_capital."
+      ],
+      "discriminator": [
+        135,
+        248,
+        191,
+        255,
+        45,
+        234,
+        153,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "Vault PDA. The first call to commit_lp_capital under this event",
+            "initialises it; subsequent calls just mutate state."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "docs": [
+            "Per-(vault, depositor) position PDA. Created on first deposit; reused",
+            "on later top-ups within the same window. After withdraw, position",
+            "can be re-initialised for a fresh commitment by closing it first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  112,
+                  111,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "depositor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_usdc",
+          "docs": [
+            "Vault's USDC token account. Must be a PDA-owned ATA so the vault",
+            "itself authorises payouts at withdraw time."
+          ],
+          "writable": true
+        },
+        {
+          "name": "depositor_usdc",
+          "docs": [
+            "Depositor's USDC source account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "commitment_expires_at",
+          "type": "i64"
+        }
+      ]
     },
     {
       "name": "commit_order",
@@ -589,6 +991,100 @@
         {
           "name": "side",
           "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "create_event_handle",
+      "docs": [
+        "Create an EventHandle PDA — the unit of LP commitment that downstream",
+        "markets inherit fee and graduation parameters from. See",
+        "docs/LIQUIDITY.md §4 for the full design rationale."
+      ],
+      "discriminator": [
+        153,
+        22,
+        236,
+        98,
+        79,
+        182,
+        89,
+        133
+      ],
+      "accounts": [
+        {
+          "name": "event_handle",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  118,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "handle_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "handle_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "category",
+          "type": "u8"
+        },
+        {
+          "name": "closes_at",
+          "type": "i64"
+        },
+        {
+          "name": "graduation_threshold_usdc",
+          "type": "u64"
+        },
+        {
+          "name": "graduation_batches",
+          "type": "u8"
+        },
+        {
+          "name": "fee_bps_taker",
+          "type": "u16"
+        },
+        {
+          "name": "fee_bps_treasury",
+          "type": "u16"
+        },
+        {
+          "name": "fee_bps_rebates",
+          "type": "u16"
+        },
+        {
+          "name": "bootstrap_seed_usdc",
+          "type": "u64"
         }
       ]
     },
@@ -805,6 +1301,99 @@
       ]
     },
     {
+      "name": "init_bootstrap_pool",
+      "docs": [
+        "Initialise a Tier 0 LMSR Bootstrap Pool for a specific market.",
+        "Caller must be the EventHandle authority. See docs/LIQUIDITY.md §5.1."
+      ],
+      "discriminator": [
+        209,
+        230,
+        22,
+        241,
+        62,
+        249,
+        239,
+        75
+      ],
+      "accounts": [
+        {
+          "name": "market"
+        },
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "bootstrap_pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_rebate_pool",
+      "docs": [
+        "Stand up the rebate pool for an EventHandle. Operator-only."
+      ],
+      "discriminator": [
+        5,
+        154,
+        234,
+        31,
+        182,
+        204,
+        150,
+        190
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "rebate_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  98,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initialize_protocol",
       "discriminator": [
         188,
@@ -976,6 +1565,126 @@
               32
             ]
           }
+        }
+      ]
+    },
+    {
+      "name": "log_rebate_deposit",
+      "docs": [
+        "Bookkeeping for off-chain SPL fee deposits into the pool ATA. Bumps",
+        "the `accrued_taker_fees_usdc` counter for UI/auditability. Token",
+        "transfer is a vanilla SPL ix outside this call."
+      ],
+      "discriminator": [
+        102,
+        101,
+        100,
+        90,
+        146,
+        247,
+        53,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "rebate_pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  98,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "lp_settle_batch",
+      "docs": [
+        "Relayer-attested per-batch state mutation. Records the LP vault's",
+        "signed inventory delta and accrued rebate share."
+      ],
+      "discriminator": [
+        244,
+        180,
+        112,
+        161,
+        96,
+        5,
+        101,
+        153
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "delta_yes_position",
+          "type": "i64"
+        },
+        {
+          "name": "delta_no_position",
+          "type": "i64"
+        },
+        {
+          "name": "rebate_share_usdc",
+          "type": "u64"
         }
       ]
     },
@@ -1202,6 +1911,43 @@
       ]
     },
     {
+      "name": "set_bootstrap_graduated",
+      "docs": [
+        "Toggle a BootstrapPool's graduated flag. Used by the relayer once",
+        "Tier 1 capital crosses the EventHandle's graduation_threshold; can",
+        "be reverted if Tier 1 unexpectedly empties out."
+      ],
+      "discriminator": [
+        103,
+        49,
+        155,
+        197,
+        70,
+        100,
+        1,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "bootstrap_pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "graduated",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "settle_batch",
       "discriminator": [
         22,
@@ -1366,6 +2112,110 @@
           }
         }
       ]
+    },
+    {
+      "name": "withdraw_lp_capital",
+      "docs": [
+        "LP (or auto-refund crank) redeems a position after the commitment",
+        "window expires. Pro-rata payout from the vault's current USDC",
+        "balance."
+      ],
+      "discriminator": [
+        233,
+        74,
+        80,
+        242,
+        203,
+        76,
+        153,
+        22
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  112,
+                  111,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "position.depositor",
+                "account": "LPPosition"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_usdc",
+          "docs": [
+            "Vault's USDC token account — the source of payout. PDA-owned by",
+            "`vault` so we can sign the transfer with vault seeds."
+          ],
+          "writable": true
+        },
+        {
+          "name": "depositor_usdc",
+          "docs": [
+            "Where the LP receives their USDC. Typically the depositor's ATA."
+          ],
+          "writable": true
+        },
+        {
+          "name": "cranker",
+          "docs": [
+            "Whoever is cranking this — could be the depositor themselves or a",
+            "relayer-sponsored auto-refund. Pays the rent for any account",
+            "closures (none in v1; future close=position)."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -1383,6 +2233,19 @@
       ]
     },
     {
+      "name": "BootstrapPool",
+      "discriminator": [
+        38,
+        217,
+        135,
+        69,
+        249,
+        109,
+        157,
+        252
+      ]
+    },
+    {
       "name": "CommitmentStore",
       "discriminator": [
         91,
@@ -1393,6 +2256,71 @@
         144,
         195,
         254
+      ]
+    },
+    {
+      "name": "EventHandle",
+      "discriminator": [
+        139,
+        77,
+        114,
+        0,
+        212,
+        250,
+        28,
+        166
+      ]
+    },
+    {
+      "name": "LPPosition",
+      "discriminator": [
+        196,
+        56,
+        115,
+        198,
+        14,
+        117,
+        32,
+        224
+      ]
+    },
+    {
+      "name": "LPVault",
+      "discriminator": [
+        99,
+        247,
+        91,
+        195,
+        124,
+        46,
+        3,
+        235
+      ]
+    },
+    {
+      "name": "MakerCredit",
+      "discriminator": [
+        75,
+        210,
+        245,
+        176,
+        146,
+        108,
+        165,
+        123
+      ]
+    },
+    {
+      "name": "MakerRebatePool",
+      "discriminator": [
+        199,
+        145,
+        83,
+        54,
+        111,
+        1,
+        92,
+        149
       ]
     },
     {
@@ -1580,7 +2508,7 @@
     {
       "code": 6007,
       "name": "NullifierAlreadyUsed",
-      "msg": "Nullifier already used \u2014 double claim attempt"
+      "msg": "Nullifier already used — double claim attempt"
     },
     {
       "code": 6008,
@@ -1610,12 +2538,12 @@
     {
       "code": 6013,
       "name": "RescueDelayNotElapsed",
-      "msg": "Rescue delay not elapsed \u2014 must wait 7 days"
+      "msg": "Rescue delay not elapsed — must wait 7 days"
     },
     {
       "code": 6014,
       "name": "Unauthorized",
-      "msg": "Unauthorized \u2014 caller is not the authority"
+      "msg": "Unauthorized — caller is not the authority"
     },
     {
       "code": 6015,
@@ -1636,6 +2564,26 @@
       "code": 6018,
       "name": "BatchMarketMismatch",
       "msg": "Batch does not belong to this market"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidEventCategory",
+      "msg": "Invalid event category — must be 0..=4"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidEventTiming",
+      "msg": "Invalid event timing — closes_at must be in the future"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidEventFees",
+      "msg": "Invalid fee parameters — treasury+rebates must equal taker bps"
+    },
+    {
+      "code": 6022,
+      "name": "EventClosed",
+      "msg": "EventHandle already closed"
     }
   ],
   "types": [
@@ -1817,6 +2765,92 @@
       }
     },
     {
+      "name": "BootstrapPool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market_id",
+            "docs": [
+              "Identifies the market this pool backstops."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "event_handle",
+            "docs": [
+              "EventHandle this pool was created under — for fee/graduation params."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "seed_usdc",
+            "docs": [
+              "Seed capital, 6-decimal USDC. Set once at init, immutable."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "current_q",
+            "docs": [
+              "Total collateral currently in the pool: seed + accrued buy-side",
+              "USDC − payouts. 6-decimal USDC."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "b_param",
+            "docs": [
+              "LS-LMSR `b` parameter. Recomputed on each fill as α × current_q",
+              "where α = LMSR_ALPHA_BPS / 10_000. Storing it explicitly so the",
+              "off-chain pricer doesn't have to recompute it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "yes_shares",
+            "docs": [
+              "Outstanding YES shares (1 share = 1 USDC if YES wins). 6-decimal."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "no_shares",
+            "docs": [
+              "Outstanding NO shares. 6-decimal."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "graduated",
+            "docs": [
+              "Set by the relayer once the market hits the graduation threshold",
+              "(≥2 batches × ≥graduation_threshold_usdc). After this, bootstrap_fill",
+              "rejects all calls — Tier 1 LP vault takes over."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "realized_pnl",
+            "docs": [
+              "Cumulative realized pnl on closed positions, signed. Resolved at",
+              "market resolution by `redeem_outcome` flow."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "ClaimProcessed",
       "type": {
         "kind": "struct",
@@ -1913,6 +2947,107 @@
       }
     },
     {
+      "name": "EventHandle",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "handle_id",
+            "docs": [
+              "32-byte stable id, e.g. blake3(canonical_event_label)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "category",
+            "docs": [
+              "EventCategory, encoded as u8 for ABI stability."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Operator who can close/refund the event early."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "closes_at",
+            "docs": [
+              "Unix seconds. Tier 1 LP capital auto-refunds after this timestamp."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "graduation_threshold_usdc",
+            "docs": [
+              "Cumulative volume across batches this event must hit before",
+              "graduation (Tier 1 backstop activates)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "graduation_batches",
+            "docs": [
+              "Number of consecutive batches that each must clear at least",
+              "graduation_threshold_usdc / graduation_batches volume."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "fee_bps_taker",
+            "docs": [
+              "Fee bps charged on filled volume by takers. Default 30."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "fee_bps_treasury",
+            "docs": [
+              "Of the taker fee, this slice goes to protocol treasury. Default 10."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "fee_bps_rebates",
+            "docs": [
+              "Of the taker fee, this slice funds the maker-rebate pool. Default 20."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "bootstrap_seed_usdc",
+            "docs": [
+              "Bootstrap-pool seed in 6-decimal USDC. Protocol-funded per market",
+              "under this handle. Default 100_000_000 = $100."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "closed",
+            "docs": [
+              "Set to true once the operator closes the event. Triggers refund flow."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "FundsLocked",
       "type": {
         "kind": "struct",
@@ -1948,6 +3083,207 @@
           {
             "name": "no_gap",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LPPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "shares_plaintext",
+            "docs": [
+              "Plaintext share balance for v1. Becomes irrelevant in v2 once",
+              "`fhe_shares_ct` becomes the source of truth — but kept on-chain",
+              "for the migration window."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fhe_shares_ct",
+            "docs": [
+              "Reserved blob for FHE-encrypted share balance (v2). v1 = all zeros."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "deposited_usdc",
+            "docs": [
+              "6-decimal USDC originally deposited. Used to compute breakeven /",
+              "PnL on the front-end without revealing share-level math."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "deposited_at",
+            "type": "i64"
+          },
+          {
+            "name": "commitment_expires_at",
+            "docs": [
+              "Auto-refund cutoff. After this timestamp, withdraw_lp_capital can",
+              "be called by anyone (relayer crank or the LP themselves)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "withdrawn",
+            "docs": [
+              "Set true once withdrawn — prevents double-withdrawal."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LPVault",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "event_handle",
+            "docs": [
+              "EventHandle this vault is bound to. Each event has exactly one vault."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "total_capital_usdc",
+            "docs": [
+              "Public aggregate of all deposits, 6-decimal USDC. Always plaintext —",
+              "transparency about total capital is a feature, not a privacy leak."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_shares",
+            "docs": [
+              "Total virtual shares outstanding. Used to compute per-position pro-rata",
+              "payouts: payout = position.shares / total_shares × current vault NAV."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "realized_yes_position",
+            "docs": [
+              "Net inventory in YES tokens, signed. Positive = vault is long YES.",
+              "Updated each batch settlement when vault absorbs residual."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "realized_no_position",
+            "docs": [
+              "Net inventory in NO tokens, signed. Positive = vault is long NO."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "accumulated_rebates_usdc",
+            "docs": [
+              "Accumulated rebate share earned across batches under this event,",
+              "6-decimal USDC. Distributed pro-rata at withdraw time."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fhe_encrypted_state",
+            "docs": [
+              "Reserved blob for FHE-encrypted aggregate state (v2). Sized for a",
+              "full EUint64 ciphertext with margin. v1 = all zeros."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MakerCredit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "maker",
+            "type": "pubkey"
+          },
+          {
+            "name": "credit",
+            "docs": [
+              "Cumulative credit. Per-fill credits are added on accrue_maker_credit.",
+              "Future v2: weight by `volume × distance_from_mid_bps` for sharper",
+              "price-improvement incentives (Limitless pattern)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "claimed",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MakerRebatePool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "event_handle",
+            "type": "pubkey"
+          },
+          {
+            "name": "accrued_taker_fees_usdc",
+            "docs": [
+              "Cumulative USDC routed into the pool. Used for accounting/UI;",
+              "actual payouts read the live token-account balance."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_credits",
+            "docs": [
+              "Sum of all maker credits accrued under this pool. Used as the",
+              "denominator in claim_maker_rebate's pro-rata math."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "closed",
+            "docs": [
+              "Set true at event end. Only after closed=true can makers claim."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -2136,9 +3472,39 @@
       "value": "[98, 97, 116, 99, 104]"
     },
     {
+      "name": "BOOTSTRAP_POOL_SEED",
+      "type": "bytes",
+      "value": "[98, 111, 111, 116, 115, 116, 114, 97, 112]"
+    },
+    {
       "name": "COMMITMENTS_SEED",
       "type": "bytes",
       "value": "[99, 111, 109, 109, 105, 116, 109, 101, 110, 116, 115]"
+    },
+    {
+      "name": "EVENT_HANDLE_SEED",
+      "type": "bytes",
+      "value": "[101, 118, 101, 110, 116]"
+    },
+    {
+      "name": "LP_POSITION_SEED",
+      "type": "bytes",
+      "value": "[108, 112, 112, 111, 115]"
+    },
+    {
+      "name": "LP_VAULT_SEED",
+      "type": "bytes",
+      "value": "[108, 112, 118, 97, 117, 108, 116]"
+    },
+    {
+      "name": "MAKER_CREDIT_SEED",
+      "type": "bytes",
+      "value": "[99, 114, 101, 100, 105, 116]"
+    },
+    {
+      "name": "MAKER_REBATE_POOL_SEED",
+      "type": "bytes",
+      "value": "[114, 101, 98, 97, 116, 101]"
     },
     {
       "name": "MARKET_SEED",

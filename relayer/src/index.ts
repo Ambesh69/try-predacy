@@ -1063,6 +1063,291 @@ app.get("/balances", async (req, res) => {
   }
 });
 
+// ─── Liquidity Stack — HTTP API (docs/LIQUIDITY.md) ───
+
+import { getEventLedger, deriveHandleId, handleIdToHex } from "./eventLedger";
+import { getLiquidityStack } from "./liquidityStack";
+
+const eventLedger = getEventLedger();
+const liquidityStack = getLiquidityStack(client, eventLedger);
+
+/**
+ * POST /events
+ * Operator-only — create a new EventHandle on-chain + register in ledger.
+ * body: { label, category, closesAt, graduationThresholdUsdc?, graduationBatches?, feeBpsTaker?, feeBpsTreasury?, feeBpsRebates?, bootstrapSeedUsdc? }
+ */
+app.post("/events", async (req, res) => {
+  try {
+    const {
+      label,
+      category = "LiveStream",
+      closesAt,
+      graduationThresholdUsdc = "1000000000",   // $1k default
+      graduationBatches = 2,
+      feeBpsTaker = 30,
+      feeBpsTreasury = 10,
+      feeBpsRebates = 20,
+      bootstrapSeedUsdc = "100000000",          // $100 default
+    } = req.body || {};
+    if (!label || !closesAt) {
+      return res.status(400).json({ error: "label + closesAt required" });
+    }
+
+    const categoryMap: Record<string, number> = {
+      LiveStream: 0, Sports: 1, Crypto: 2, Politics: 3, Custom: 4,
+    };
+    const categoryNum = categoryMap[category] ?? 4;
+
+    const handleId = deriveHandleId(label);
+    const txSig = await client.createEventHandle({
+      handleId,
+      category: categoryNum,
+      closesAt: BigInt(closesAt),
+      graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
+      graduationBatches,
+      feeBpsTaker,
+      feeBpsTreasury,
+      feeBpsRebates,
+      bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
+    });
+
+    const [eventHandlePda] = client.eventHandlePda(handleId);
+    const entry = eventLedger.register({
+      handleId: handleIdToHex(handleId),
+      category: category as any,
+      eventHandlePda: eventHandlePda.toBase58(),
+      authority: client.relayer.publicKey.toBase58(),
+      closesAt: Number(closesAt),
+      graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
+      graduationBatches,
+      feeBpsTaker,
+      feeBpsTreasury,
+      feeBpsRebates,
+      bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
+    });
+
+    // Also stand up the rebate pool — Tier 2 needs it before any fills happen.
+    try {
+      await client.initRebatePool(eventHandlePda);
+    } catch (err: any) {
+      // If init_rebate_pool fails (e.g., race), log + continue. Operator can retry.
+      console.warn(`[POST /events] initRebatePool warning: ${err.message}`);
+    }
+
+    res.json({
+      ok: true,
+      txSig,
+      handleIdHex: entry.handleId,
+      eventHandlePda: entry.eventHandlePda,
+    });
+  } catch (err: any) {
+    console.error("[POST /events] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /events — list registered events. */
+app.get("/events", (_req, res) => {
+  const events = eventLedger.list().map((ev) => ({
+    handleId: ev.handleId,
+    category: ev.category,
+    eventHandlePda: ev.eventHandlePda,
+    closesAt: ev.closesAt,
+    graduationThresholdUsdc: ev.graduationThresholdUsdc.toString(),
+    graduationBatches: ev.graduationBatches,
+    graduated: ev.graduated,
+    cumulativeVolumeUsdc: ev.cumulativeVolumeUsdc.toString(),
+    marketCount: ev.marketIds.length,
+    feeBpsTaker: ev.feeBpsTaker,
+    feeBpsTreasury: ev.feeBpsTreasury,
+    feeBpsRebates: ev.feeBpsRebates,
+    bootstrapSeedUsdc: ev.bootstrapSeedUsdc.toString(),
+    closed: ev.closed,
+  }));
+  res.json({ events });
+});
+
+/**
+ * POST /events/:handleIdHex/markets
+ * Bind an existing market to an event. Stands up the bootstrap pool too.
+ * body: { marketId: hex }
+ */
+app.post("/events/:handleIdHex/markets", async (req, res) => {
+  try {
+    const handleIdHex = req.params.handleIdHex;
+    const { marketId: marketIdHex } = req.body || {};
+    if (!marketIdHex) return res.status(400).json({ error: "marketId required" });
+
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not found in ledger" });
+
+    const marketIdBuf = Buffer.from(marketIdHex.replace("0x", ""), "hex");
+    const eventHandleKey = new (require("@solana/web3.js").PublicKey)(ev.eventHandlePda);
+
+    // Bootstrap pool init is idempotent at the chain layer — this call
+    // is a no-op (returns error) if it already exists. Catch + continue.
+    let bootstrapTxSig: string | null = null;
+    try {
+      bootstrapTxSig = await client.initBootstrapPool(marketIdBuf, eventHandleKey);
+    } catch (err: any) {
+      console.warn(`[POST /events/.../markets] initBootstrapPool warning: ${err.message}`);
+    }
+
+    eventLedger.attachMarket(handleIdHex, marketIdHex.toLowerCase().replace("0x", ""));
+    res.json({ ok: true, bootstrapTxSig, marketCount: eventLedger.get(handleIdHex)!.marketIds.length });
+  } catch (err: any) {
+    console.error("[POST /events/.../markets] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /lp/commit
+ * Build an unsigned commit_lp_capital transaction for the user to sign.
+ * body: { handleIdHex, depositor, amount, commitmentExpiresAt }
+ * response: { ok, txBase64 }  — frontend signs + submits, returning tx sig.
+ */
+app.post("/lp/commit", async (req, res) => {
+  try {
+    const { handleIdHex, depositor, amount, commitmentExpiresAt } = req.body || {};
+    if (!handleIdHex || !depositor || !amount || !commitmentExpiresAt) {
+      return res.status(400).json({ error: "handleIdHex + depositor + amount + commitmentExpiresAt required" });
+    }
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not found" });
+
+    const { PublicKey } = await import("@solana/web3.js");
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    const eventHandleKey = new PublicKey(ev.eventHandlePda);
+    const depositorKey = new PublicKey(depositor);
+
+    const protocolCfg = await client.fetchProtocolConfig();
+    const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+
+    // Vault USDC ATA — owned by the LP vault PDA. Created on demand by relayer
+    // since vault PDAs can't sign their own ATA-creation rent-payer.
+    const [vaultPda] = client.lpVaultPda(eventHandleKey);
+    const vaultAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(),
+      client.relayer,
+      usdcMint,
+      vaultPda,
+      true, // allowOwnerOffCurve — required for PDA-owned ATA
+    );
+    const depositorAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(),
+      client.relayer,
+      usdcMint,
+      depositorKey,
+    );
+
+    const tx = await client.commitLpCapital({
+      eventHandleKey,
+      depositor: depositorKey,
+      depositorUsdc: depositorAta.address,
+      vaultUsdc: vaultAta.address,
+      amount: BigInt(amount),
+      commitmentExpiresAt: BigInt(commitmentExpiresAt),
+    });
+
+    const blockhash = await client.getConnection().getLatestBlockhash();
+    tx.recentBlockhash = blockhash.blockhash;
+    const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
+    res.json({ ok: true, txBase64: serialised });
+  } catch (err: any) {
+    console.error("[POST /lp/commit] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /lp/positions?wallet=...
+ * Returns the LP's positions across all events.
+ */
+app.get("/lp/positions", async (req, res) => {
+  try {
+    const wallet = req.query.wallet as string;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const { PublicKey } = await import("@solana/web3.js");
+    const walletKey = new PublicKey(wallet);
+
+    const positions: any[] = [];
+    for (const ev of eventLedger.list()) {
+      const eventHandleKey = new PublicKey(ev.eventHandlePda);
+      const [vault] = client.lpVaultPda(eventHandleKey);
+      try {
+        const pos = await client.fetchLpPosition(vault, walletKey);
+        positions.push({
+          handleId: ev.handleId,
+          category: ev.category,
+          eventHandlePda: ev.eventHandlePda,
+          shares: pos.sharesPlaintext.toString(),
+          depositedUsdc: pos.depositedUsdc.toString(),
+          depositedAt: Number(pos.depositedAt),
+          commitmentExpiresAt: Number(pos.commitmentExpiresAt),
+          withdrawn: pos.withdrawn,
+        });
+      } catch {
+        // No position in this event — skip silently.
+      }
+    }
+    res.json({ positions });
+  } catch (err: any) {
+    console.error("[GET /lp/positions] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /lp/withdraw
+ * Build an unsigned withdraw_lp_capital transaction. Cranker (= caller)
+ * pays the tx; payout always goes to depositor.
+ * body: { handleIdHex, depositor, cranker }
+ */
+app.post("/lp/withdraw", async (req, res) => {
+  try {
+    const { handleIdHex, depositor, cranker } = req.body || {};
+    if (!handleIdHex || !depositor || !cranker) {
+      return res.status(400).json({ error: "handleIdHex + depositor + cranker required" });
+    }
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not found" });
+
+    const { PublicKey } = await import("@solana/web3.js");
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    const eventHandleKey = new PublicKey(ev.eventHandlePda);
+    const depositorKey = new PublicKey(depositor);
+    const crankerKey = new PublicKey(cranker);
+
+    const protocolCfg = await client.fetchProtocolConfig();
+    const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+    const [vaultPda] = client.lpVaultPda(eventHandleKey);
+
+    const vaultAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(), client.relayer, usdcMint, vaultPda, true,
+    );
+    const depositorAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(), client.relayer, usdcMint, depositorKey,
+    );
+
+    const tx = await client.withdrawLpCapital({
+      eventHandleKey,
+      depositor: depositorKey,
+      depositorUsdc: depositorAta.address,
+      vaultUsdc: vaultAta.address,
+      cranker: crankerKey,
+    });
+
+    const blockhash = await client.getConnection().getLatestBlockhash();
+    tx.recentBlockhash = blockhash.blockhash;
+    const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
+    res.json({ ok: true, txBase64: serialised });
+  } catch (err: any) {
+    console.error("[POST /lp/withdraw] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Start Server ───
 const PORT = config.port;
 app.listen(PORT, () => {

@@ -12,6 +12,8 @@ import { buildMerkleTree } from "./zkClaimProver";
 import { computePairMatching, formatPairMatching, PairMatchingResult } from "./pairMatcher";
 import { routeResiduals, CLOBRoutingSummary } from "./polymarketRouter";
 import { planBundle, getBundleStore } from "./ikaOrchestrator";
+import { getEventLedger } from "./eventLedger";
+import { getLiquidityStack, ResidualImbalance, LiquidityFillResult } from "./liquidityStack";
 import { selectFheBackend } from "./fheBackend";
 import { encryptOrder, computeEncryptedClearing, candidatePricesFromPlaintext } from "./encryptedClearing";
 import { computeOnchainFheClearing, loadPredacyFheProgram } from "./onchainFheClearing";
@@ -569,10 +571,56 @@ export class BatchProcessor {
 
       console.log(`[BatchProcessor] Batch ${batchIndex} settled successfully`);
 
+      // 9b. Liquidity Stack — Tier 0/1 residual absorption (docs/LIQUIDITY.md).
+      // No-ops cleanly when this market doesn't have an EventHandle attached
+      // (legacy markets fall through to the original CLOB routing in step 10).
+      // The Stack records its own ledger updates; tx submission is best-effort.
+      const liquidityStack = getLiquidityStack(this.client, getEventLedger());
+      let stackResult: LiquidityFillResult | null = null;
+      try {
+        const eventForMarket = liquidityStack.getEvent(marketKey);
+        if (eventForMarket) {
+          // Net residual imbalance per side, signed (positive = net BUY).
+          const yesNet = pairMatching.residualYesBuyQty - pairMatching.residualYesSellQty;
+          const noNet = pairMatching.residualNoBuyQty - pairMatching.residualNoSellQty;
+          const takerVolUsdc =
+            result.filledYesBuyVol +
+            result.filledNoBuyVol +
+            (result.filledYesSellQty * result.clearingPrice) / 1_000_000n +
+            (result.filledNoSellQty * (1_000_000n - result.clearingPrice)) / 1_000_000n;
+          const residual: ResidualImbalance = {
+            yesNetBuy: yesNet,
+            noNetBuy: noNet,
+            clearingPrice: result.clearingPrice,
+            takerVolumeUsdc: takerVolUsdc,
+          };
+          stackResult = await liquidityStack.absorbResidual(state.marketId, residual);
+          console.log(
+            `[LiquidityStack] tier=${stackResult.tier} txSig=${stackResult.txSig?.slice(0, 12) ?? "n/a"}` +
+              ` deltaYes=${stackResult.deltaYes} deltaNo=${stackResult.deltaNo} usdcDelta=${stackResult.usdcDelta}`,
+          );
+        }
+      } catch (err: any) {
+        // Stack failure must NOT halt batch settlement — log + continue with
+        // legacy routing. Tier 0/1 are safety nets, not critical path.
+        console.error(`[LiquidityStack] absorbResidual failed (non-fatal):`, err.message);
+      }
+
       // 10. Mock Polymarket CLOB routing for residuals. On devnet this is
       // metadata only — see polymarketRouter.ts. On mainnet this call becomes
       // real Ika-orchestrated LP unlocks + Polymarket CLOB submissions.
-      const clobRouting = await routeResiduals(orderList, result.clearingPrice, pairMatching);
+      // Skipped when the Liquidity Stack already absorbed (i.e. eventful market).
+      const stackHandled = stackResult && stackResult.tier !== "none";
+      const clobRouting: CLOBRoutingSummary = stackHandled
+        ? {
+            receipts: [],
+            totalUsdcToLp: 0n,
+            totalUsdcFromPolymarket: 0n,
+            lpQuote: null,
+            lpUnavailable: false,
+            elapsedMs: 0,
+          }
+        : await routeResiduals(orderList, result.clearingPrice, pairMatching);
 
       // 11. Record settlement stats for the /settlement-stats API.
       const stats: BatchSettlementStats = {

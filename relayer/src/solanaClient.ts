@@ -22,6 +22,13 @@ const NO_MINT_SEED = Buffer.from("no_mint");
 const USDC_VAULT_SEED = Buffer.from("usdc_vault");
 const YES_VAULT_SEED = Buffer.from("yes_vault");
 const NO_VAULT_SEED = Buffer.from("no_vault");
+// Liquidity Stack PDAs (Sprint 1.1–1.4 — see docs/LIQUIDITY.md §5)
+const EVENT_HANDLE_SEED = Buffer.from("event");
+const BOOTSTRAP_POOL_SEED = Buffer.from("bootstrap");
+const LP_VAULT_SEED = Buffer.from("lpvault");
+const LP_POSITION_SEED = Buffer.from("lppos");
+const MAKER_REBATE_POOL_SEED = Buffer.from("rebate");
+const MAKER_CREDIT_SEED = Buffer.from("credit");
 
 export class SolanaClient {
   connection: Connection;
@@ -124,6 +131,50 @@ export class SolanaClient {
     return PublicKey.findProgramAddressSync(
       [NO_VAULT_SEED, marketId],
       this.programId
+    );
+  }
+
+  // ─── Liquidity Stack PDAs ───
+
+  eventHandlePda(handleId: Buffer): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [EVENT_HANDLE_SEED, handleId],
+      this.programId,
+    );
+  }
+
+  bootstrapPoolPda(marketId: Buffer): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [BOOTSTRAP_POOL_SEED, marketId],
+      this.programId,
+    );
+  }
+
+  lpVaultPda(eventHandle: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [LP_VAULT_SEED, eventHandle.toBuffer()],
+      this.programId,
+    );
+  }
+
+  lpPositionPda(vault: PublicKey, depositor: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [LP_POSITION_SEED, vault.toBuffer(), depositor.toBuffer()],
+      this.programId,
+    );
+  }
+
+  makerRebatePoolPda(eventHandle: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [MAKER_REBATE_POOL_SEED, eventHandle.toBuffer()],
+      this.programId,
+    );
+  }
+
+  makerCreditPda(pool: PublicKey, maker: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync(
+      [MAKER_CREDIT_SEED, pool.toBuffer(), maker.toBuffer()],
+      this.programId,
     );
   }
 
@@ -396,5 +447,328 @@ export class SolanaClient {
 
   getConnection() {
     return this.connection;
+  }
+
+  // ─── Liquidity Stack — Instruction Wrappers (docs/LIQUIDITY.md) ───
+
+  /**
+   * Create an EventHandle PDA — the unit of LP commitment that markets
+   * inherit fee + graduation parameters from. Operator-only.
+   */
+  async createEventHandle(args: {
+    handleId: Buffer;
+    category: number;            // EventCategory: 0=LiveStream 1=Sports 2=Crypto 3=Politics 4=Custom
+    closesAt: bigint;            // unix seconds
+    graduationThresholdUsdc: bigint;
+    graduationBatches: number;
+    feeBpsTaker: number;         // 30
+    feeBpsTreasury: number;      // 10
+    feeBpsRebates: number;       // 20
+    bootstrapSeedUsdc: bigint;   // 100_000_000n = $100
+  }): Promise<string> {
+    const [eventHandle] = this.eventHandlePda(args.handleId);
+    const tx = await this.program.methods
+      .createEventHandle(
+        Array.from(args.handleId),
+        args.category,
+        new anchor.BN(args.closesAt.toString()),
+        new anchor.BN(args.graduationThresholdUsdc.toString()),
+        args.graduationBatches,
+        args.feeBpsTaker,
+        args.feeBpsTreasury,
+        args.feeBpsRebates,
+        new anchor.BN(args.bootstrapSeedUsdc.toString()),
+      )
+      .accounts({
+        eventHandle,
+        authority: this.relayer.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    console.log(`[createEventHandle] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * Initialise a Tier 0 LMSR Bootstrap Pool for a market under an event.
+   * Operator-only. Reads `bootstrap_seed_usdc` from the EventHandle.
+   */
+  async initBootstrapPool(marketId: Buffer, eventHandleKey: PublicKey): Promise<string> {
+    const [market] = this.marketPda(marketId);
+    const [bootstrapPool] = this.bootstrapPoolPda(marketId);
+    const tx = await this.program.methods
+      .initBootstrapPool()
+      .accounts({
+        market,
+        eventHandle: eventHandleKey,
+        bootstrapPool,
+        authority: this.relayer.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    console.log(`[initBootstrapPool] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * Relayer-attested fill against the Tier 0 curve. Updates curve state;
+   * actual token settlement still flows through `lock_funds`.
+   */
+  async bootstrapFill(args: {
+    marketId: Buffer;
+    eventHandleKey: PublicKey;
+    side: number;            // 0=YES_BUY 1=YES_SELL 2=NO_BUY 3=NO_SELL
+    qtyShares: bigint;       // 6-decimal
+    usdcPaid: bigint;        // 6-decimal
+    isBuy: boolean;
+  }): Promise<string> {
+    const [bootstrapPool] = this.bootstrapPoolPda(args.marketId);
+    const tx = await this.program.methods
+      .bootstrapFill(
+        args.side,
+        new anchor.BN(args.qtyShares.toString()),
+        new anchor.BN(args.usdcPaid.toString()),
+        args.isBuy,
+      )
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        bootstrapPool,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[bootstrapFill] tx: ${tx}`);
+    return tx;
+  }
+
+  async setBootstrapGraduated(args: {
+    marketId: Buffer;
+    eventHandleKey: PublicKey;
+    graduated: boolean;
+  }): Promise<string> {
+    const [bootstrapPool] = this.bootstrapPoolPda(args.marketId);
+    const tx = await this.program.methods
+      .setBootstrapGraduated(args.graduated)
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        bootstrapPool,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[setBootstrapGraduated] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * LP deposits USDC under an EventHandle, receiving virtual shares against
+   * the per-event Tier 1 vault. User-facing — depositor signs, NOT relayer.
+   *
+   * `signer` is the LP keypair; for the demo we'd typically build the tx
+   * server-side and have the user sign on the frontend.
+   */
+  async commitLpCapital(args: {
+    eventHandleKey: PublicKey;
+    depositor: PublicKey;
+    depositorUsdc: PublicKey;
+    vaultUsdc: PublicKey;
+    amount: bigint;
+    commitmentExpiresAt: bigint;
+  }): Promise<Transaction> {
+    const [vault] = this.lpVaultPda(args.eventHandleKey);
+    const [position] = this.lpPositionPda(vault, args.depositor);
+    const ix = await this.program.methods
+      .commitLpCapital(
+        new anchor.BN(args.amount.toString()),
+        new anchor.BN(args.commitmentExpiresAt.toString()),
+      )
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        vault,
+        position,
+        vaultUsdc: args.vaultUsdc,
+        depositorUsdc: args.depositorUsdc,
+        depositor: args.depositor,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction();
+    const tx = new Transaction().add(ix);
+    tx.feePayer = args.depositor;
+    return tx;
+  }
+
+  /**
+   * Per-batch state mutation for Tier 1 vault. Operator-driven — called
+   * once per settled batch under an event when the vault absorbed residual.
+   */
+  async lpSettleBatch(args: {
+    eventHandleKey: PublicKey;
+    deltaYesPosition: bigint;     // signed
+    deltaNoPosition: bigint;
+    rebateShareUsdc: bigint;
+  }): Promise<string> {
+    const [vault] = this.lpVaultPda(args.eventHandleKey);
+    const tx = await this.program.methods
+      .lpSettleBatch(
+        new anchor.BN(args.deltaYesPosition.toString()),
+        new anchor.BN(args.deltaNoPosition.toString()),
+        new anchor.BN(args.rebateShareUsdc.toString()),
+      )
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        vault,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[lpSettleBatch] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * LP withdraws position post-expiry. Anyone can crank, payout always
+   * goes to the original depositor. Build tx for user/crank to sign.
+   */
+  async withdrawLpCapital(args: {
+    eventHandleKey: PublicKey;
+    depositor: PublicKey;
+    depositorUsdc: PublicKey;
+    vaultUsdc: PublicKey;
+    cranker: PublicKey;
+  }): Promise<Transaction> {
+    const [vault] = this.lpVaultPda(args.eventHandleKey);
+    const [position] = this.lpPositionPda(vault, args.depositor);
+    const ix = await this.program.methods
+      .withdrawLpCapital()
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        vault,
+        position,
+        vaultUsdc: args.vaultUsdc,
+        depositorUsdc: args.depositorUsdc,
+        cranker: args.cranker,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .instruction();
+    const tx = new Transaction().add(ix);
+    tx.feePayer = args.cranker;
+    return tx;
+  }
+
+  /**
+   * Stand up the Tier 2 rebate pool for an EventHandle. Operator-only.
+   */
+  async initRebatePool(eventHandleKey: PublicKey): Promise<string> {
+    const [rebatePool] = this.makerRebatePoolPda(eventHandleKey);
+    const tx = await this.program.methods
+      .initRebatePool()
+      .accounts({
+        eventHandle: eventHandleKey,
+        rebatePool,
+        authority: this.relayer.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    console.log(`[initRebatePool] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * Credit a maker for absorbing taker volume in a settled batch.
+   * Relayer-driven (event authority signed). Tops up an existing credit
+   * or creates a fresh one.
+   */
+  async accrueMakerCredit(args: {
+    eventHandleKey: PublicKey;
+    maker: PublicKey;
+    credit: bigint;
+  }): Promise<string> {
+    const [rebatePool] = this.makerRebatePoolPda(args.eventHandleKey);
+    const [makerCredit] = this.makerCreditPda(rebatePool, args.maker);
+    const tx = await this.program.methods
+      .accrueMakerCredit(args.maker, new anchor.BN(args.credit.toString()))
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        rebatePool,
+        makerCredit,
+        authority: this.relayer.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    console.log(`[accrueMakerCredit] tx: ${tx}`);
+    return tx;
+  }
+
+  async closeRebatePool(eventHandleKey: PublicKey): Promise<string> {
+    const [rebatePool] = this.makerRebatePoolPda(eventHandleKey);
+    const tx = await this.program.methods
+      .closeRebatePool()
+      .accounts({
+        eventHandle: eventHandleKey,
+        rebatePool,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[closeRebatePool] tx: ${tx}`);
+    return tx;
+  }
+
+  /**
+   * Maker claims their pro-rata share of the rebate pool. User-facing —
+   * builds the tx for the maker to sign.
+   */
+  async claimMakerRebate(args: {
+    eventHandleKey: PublicKey;
+    maker: PublicKey;
+    makerUsdc: PublicKey;
+    poolUsdc: PublicKey;
+  }): Promise<Transaction> {
+    const [rebatePool] = this.makerRebatePoolPda(args.eventHandleKey);
+    const [makerCredit] = this.makerCreditPda(rebatePool, args.maker);
+    const ix = await this.program.methods
+      .claimMakerRebate()
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        rebatePool,
+        makerCredit,
+        poolUsdc: args.poolUsdc,
+        makerUsdc: args.makerUsdc,
+        maker: args.maker,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .instruction();
+    const tx = new Transaction().add(ix);
+    tx.feePayer = args.maker;
+    return tx;
+  }
+
+  // ─── Liquidity Stack — Account Fetchers ───
+
+  async fetchEventHandle(handleId: Buffer) {
+    const [pda] = this.eventHandlePda(handleId);
+    return (this.program.account as any).eventHandle.fetch(pda);
+  }
+
+  async fetchBootstrapPool(marketId: Buffer) {
+    const [pda] = this.bootstrapPoolPda(marketId);
+    return (this.program.account as any).bootstrapPool.fetch(pda);
+  }
+
+  async fetchLpVault(eventHandleKey: PublicKey) {
+    const [pda] = this.lpVaultPda(eventHandleKey);
+    return (this.program.account as any).lPVault.fetch(pda);
+  }
+
+  async fetchLpPosition(vault: PublicKey, depositor: PublicKey) {
+    const [pda] = this.lpPositionPda(vault, depositor);
+    return (this.program.account as any).lPPosition.fetch(pda);
+  }
+
+  async fetchMakerRebatePool(eventHandleKey: PublicKey) {
+    const [pda] = this.makerRebatePoolPda(eventHandleKey);
+    return (this.program.account as any).makerRebatePool.fetch(pda);
+  }
+
+  async fetchMakerCredit(pool: PublicKey, maker: PublicKey) {
+    const [pda] = this.makerCreditPda(pool, maker);
+    return (this.program.account as any).makerCredit.fetch(pda);
   }
 }
