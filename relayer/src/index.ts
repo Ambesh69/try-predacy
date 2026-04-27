@@ -1261,6 +1261,106 @@ app.post("/lp/commit", async (req, res) => {
 });
 
 /**
+ * POST /lp/commit-blind
+ * Tier 1 Blind LP deposit. Same shape as /lp/commit but the deposit amount
+ * is FHE-encrypted via Encrypt's CreateInput first; the resulting
+ * ciphertext id is embedded in the on-chain ix.
+ *
+ * v1 trust model: relayer holds Encrypt's network key (same as batch
+ * clearing). LP-self-decrypt at withdraw ships in Encrypt Alpha 1.
+ *
+ * body: { handleIdHex, depositor, amount, commitmentExpiresAt }
+ * response: { ok, txBase64, ciphertextIdHex }
+ */
+app.post("/lp/commit-blind", async (req, res) => {
+  try {
+    const { handleIdHex, depositor, amount, commitmentExpiresAt } = req.body || {};
+    if (!handleIdHex || !depositor || !amount || !commitmentExpiresAt) {
+      return res.status(400).json({ error: "handleIdHex + depositor + amount + commitmentExpiresAt required" });
+    }
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not found" });
+
+    const { PublicKey } = await import("@solana/web3.js");
+    const { getOrCreateAssociatedTokenAccount } = await import("@solana/spl-token");
+    const { encryptDepositAmount } = await import("./blindLp");
+    const eventHandleKey = new PublicKey(ev.eventHandlePda);
+    const depositorKey = new PublicKey(depositor);
+
+    // Sprint 2.4 bypass: if BLIND_LP_ENABLED=false (or unset), or if Encrypt
+    // gRPC is unreachable, attempt plaintext fallback so the demo doesn't
+    // hard-fail on infra outages. The on-chain ix path differs (commit_lp_capital
+    // vs commit_lp_capital_blind), so the response signals which one to expect.
+    const blindEnabled = process.env.BLIND_LP_ENABLED !== "false";
+    let encryption;
+    let mode: "blind" | "plaintext-fallback" = "blind";
+    if (!blindEnabled) {
+      mode = "plaintext-fallback";
+      encryption = { ciphertextId: Buffer.alloc(32, 0), plaintextEcho: BigInt(amount) };
+      console.log("[POST /lp/commit-blind] BLIND_LP_ENABLED=false — falling back to plaintext");
+    } else {
+      try {
+        // Step 1: gRPC encrypt the deposit amount.
+        encryption = await encryptDepositAmount(BigInt(amount), depositorKey);
+      } catch (err: any) {
+        mode = "plaintext-fallback";
+        encryption = { ciphertextId: Buffer.alloc(32, 0), plaintextEcho: BigInt(amount) };
+        console.warn(`[POST /lp/commit-blind] Encrypt gRPC unavailable, plaintext fallback: ${err.message}`);
+      }
+    }
+
+    // Step 2: derive USDC ATAs the same way the plaintext path does.
+    const protocolCfg = await client.fetchProtocolConfig();
+    const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+    const [vaultPda] = client.lpVaultPda(eventHandleKey);
+    const vaultAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(), client.relayer, usdcMint, vaultPda, true,
+    );
+    const depositorAta = await getOrCreateAssociatedTokenAccount(
+      client.getConnection(), client.relayer, usdcMint, depositorKey,
+    );
+
+    // Step 3: build the on-chain tx. In blind mode we use the new
+    // commit_lp_capital_blind ix (carries ciphertext id). In plaintext-
+    // fallback we use the existing commit_lp_capital so the deposit still
+    // lands cleanly even when Encrypt is down.
+    let tx;
+    if (mode === "blind") {
+      tx = await client.commitLpCapitalBlind({
+        eventHandleKey,
+        depositor: depositorKey,
+        depositorUsdc: depositorAta.address,
+        vaultUsdc: vaultAta.address,
+        amount: BigInt(amount),
+        commitmentExpiresAt: BigInt(commitmentExpiresAt),
+        fheCiphertextId: encryption.ciphertextId,
+      });
+    } else {
+      tx = await client.commitLpCapital({
+        eventHandleKey,
+        depositor: depositorKey,
+        depositorUsdc: depositorAta.address,
+        vaultUsdc: vaultAta.address,
+        amount: BigInt(amount),
+        commitmentExpiresAt: BigInt(commitmentExpiresAt),
+      });
+    }
+    const blockhash = await client.getConnection().getLatestBlockhash();
+    tx.recentBlockhash = blockhash.blockhash;
+    const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
+    res.json({
+      ok: true,
+      mode,
+      txBase64: serialised,
+      ciphertextIdHex: mode === "blind" ? encryption.ciphertextId.toString("hex") : null,
+    });
+  } catch (err: any) {
+    console.error("[POST /lp/commit-blind] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /lp/positions?wallet=...
  * Returns the LP's positions across all events.
  */

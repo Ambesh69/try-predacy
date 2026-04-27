@@ -118,6 +118,25 @@ pub mod predacy {
         instructions::withdraw_lp_capital::handler(ctx)
     }
 
+    /// Tier 1 Blind LP deposit — same as commit_lp_capital but additionally
+    /// stores a 32-byte Encrypt ciphertext public key in the LP position.
+    /// The ciphertext is created off-chain by the relayer via gRPC
+    /// `CreateInput` BEFORE this tx fires; we just persist the id.
+    /// See docs/LIQUIDITY.md §7 + Sprint 2.1 feasibility test.
+    pub fn commit_lp_capital_blind(
+        ctx: Context<CommitLpCapitalBlind>,
+        amount: u64,
+        commitment_expires_at: i64,
+        fhe_ciphertext_id: [u8; 32],
+    ) -> Result<()> {
+        instructions::commit_lp_capital_blind::handler(
+            ctx,
+            amount,
+            commitment_expires_at,
+            fhe_ciphertext_id,
+        )
+    }
+
     // ─── Liquidity Stack — Tier 2 (Maker Rebates) ───
     // See docs/LIQUIDITY.md §5.3.
 

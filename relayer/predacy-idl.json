@@ -823,6 +823,121 @@
       ]
     },
     {
+      "name": "commit_lp_capital_blind",
+      "docs": [
+        "Tier 1 Blind LP deposit — same as commit_lp_capital but additionally",
+        "stores a 32-byte Encrypt ciphertext public key in the LP position.",
+        "The ciphertext is created off-chain by the relayer via gRPC",
+        "`CreateInput` BEFORE this tx fires; we just persist the id.",
+        "See docs/LIQUIDITY.md §7 + Sprint 2.1 feasibility test."
+      ],
+      "discriminator": [
+        27,
+        207,
+        184,
+        198,
+        12,
+        147,
+        67,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "event_handle"
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "event_handle"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  112,
+                  112,
+                  111,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "account",
+                "path": "depositor"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_usdc",
+          "writable": true
+        },
+        {
+          "name": "depositor_usdc",
+          "writable": true
+        },
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "commitment_expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "fhe_ciphertext_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "commit_order",
       "discriminator": [
         106,

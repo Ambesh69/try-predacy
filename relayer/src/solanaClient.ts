@@ -597,6 +597,50 @@ export class SolanaClient {
   }
 
   /**
+   * Tier 1 Blind LP deposit — encrypts deposit amount under Encrypt's
+   * network key + persists the resulting ciphertext id in
+   * LPPosition.fhe_shares_ct on-chain. The plaintext USDC transfer is
+   * still public (it's an SPL transfer); what becomes private is the
+   * per-LP encrypted balance representation that future FHE-share-math
+   * ix will operate on.
+   */
+  async commitLpCapitalBlind(args: {
+    eventHandleKey: PublicKey;
+    depositor: PublicKey;
+    depositorUsdc: PublicKey;
+    vaultUsdc: PublicKey;
+    amount: bigint;
+    commitmentExpiresAt: bigint;
+    fheCiphertextId: Buffer;  // 32 bytes — produced by blindLp.encryptDepositAmount
+  }): Promise<Transaction> {
+    if (args.fheCiphertextId.length !== 32) {
+      throw new Error(`commitLpCapitalBlind: ciphertext id must be 32 bytes, got ${args.fheCiphertextId.length}`);
+    }
+    const [vault] = this.lpVaultPda(args.eventHandleKey);
+    const [position] = this.lpPositionPda(vault, args.depositor);
+    const ix = await this.program.methods
+      .commitLpCapitalBlind(
+        new anchor.BN(args.amount.toString()),
+        new anchor.BN(args.commitmentExpiresAt.toString()),
+        Array.from(args.fheCiphertextId),
+      )
+      .accounts({
+        eventHandle: args.eventHandleKey,
+        vault,
+        position,
+        vaultUsdc: args.vaultUsdc,
+        depositorUsdc: args.depositorUsdc,
+        depositor: args.depositor,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction();
+    const tx = new Transaction().add(ix);
+    tx.feePayer = args.depositor;
+    return tx;
+  }
+
+  /**
    * Per-batch state mutation for Tier 1 vault. Operator-driven — called
    * once per settled batch under an event when the vault absorbed residual.
    */
