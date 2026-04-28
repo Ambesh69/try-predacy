@@ -271,12 +271,11 @@ async function settleOneChunk(
     .rpc({ commitment: "confirmed" });
 
   // 4. settle_fhe_batch
-  const initialDigests = await Promise.all(
-    outputs.map(async kp => {
-      const info = await connection.getAccountInfo(kp.publicKey);
-      return info!.data.subarray(2, 34).toString("hex");
-    }),
-  );
+  //
+  // Snapshot the Solana slot before submitting so we can verify the
+  // executor's commit happens AFTER our settle tx (i.e., the status
+  // byte transition is from the executor, not from create_output_ct).
+  const preSettleSlot = await connection.getSlot("confirmed");
 
   const settleIx = await (program.methods as any)
     .settleFheBatch(cpiAuthorityBump)
@@ -314,40 +313,60 @@ async function settleOneChunk(
   const settleSig = await connection.sendTransaction(vtx, { skipPreflight: false });
   await connection.confirmTransaction(settleSig, "confirmed");
 
-  // 5. Poll for executor to commit new digests. Encrypt's pre-Alpha
-  // executor typically takes 2-5s but can spike to 30-90s under load
-  // (observed batches 277 ✓ at ~6s, 278 ✗ at >60s on 2026-04-28).
-  // Budget 120s; log progress every 20s so a slow batch is visible
-  // rather than feeling stuck. Plaintext fallback in batchProcessor
-  // catches the throw if even 120s isn't enough.
+  // 5. Poll for the executor to commit each output ciphertext.
+  //
+  // We check the status byte at offset 99 of each output CT account:
+  //   CIPHERTEXT_STATUS_COMMITTED = 1
+  // and verify the account's slot is AFTER preSettleSlot so we don't
+  // false-positive on the create_output_ct status (which can already be
+  // marked committed at create time depending on path).
+  //
+  // The previous implementation polled output digests and broke as soon
+  // as any side cleared to zero — pre-created plaintext-zero CTs and the
+  // executor's zero-result CTs hash to the same digest, so the digest
+  // never appeared to change. Diagnosed by Fesal @ Encrypt 2026-04-28:
+  // batches 274-277 worked (mixed flow → non-zero on all sides), batches
+  // 278+ failed (one-sided $5 YES_BUY → 3 of 4 outputs zero).
+  //
+  // Encrypt's pre-Alpha executor typically commits in 2-5s; budget 120s
+  // anyway so a single slow batch doesn't surface as failure when the
+  // async wrapper catches it.
   const POLL_INTERVAL_MS = 2000;
   const POLL_MAX_ITERATIONS = 60;          // 60 × 2s = 120s budget
   const PROGRESS_LOG_EVERY_ITERATIONS = 10; // every 20s
+  const CT_STATUS_OFFSET = 99;
+  const CT_STATUS_COMMITTED = 1;
   const submittedAt = Date.now();
   let executorLatencyMs = 0;
   for (let i = 0; i < POLL_MAX_ITERATIONS; i++) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-    const digests = await Promise.all(
-      outputs.map(async kp => {
-        const info = await connection.getAccountInfo(kp.publicKey);
-        return info!.data.subarray(2, 34).toString("hex");
-      }),
+    // Use getMultipleAccountsInfo so we get a consistent slot across all 4.
+    const infos = await connection.getMultipleAccountsInfo(
+      outputs.map(kp => kp.publicKey),
+      "confirmed",
     );
-    if (digests.every((d, idx) => d !== initialDigests[idx])) {
+    const slotAtRead = await connection.getSlot("confirmed");
+    const allCommitted = infos.every(
+      (info) => !!info && info.data[CT_STATUS_OFFSET] === CT_STATUS_COMMITTED,
+    );
+    if (allCommitted && slotAtRead > preSettleSlot) {
       executorLatencyMs = Date.now() - submittedAt;
       break;
     }
     if ((i + 1) % PROGRESS_LOG_EVERY_ITERATIONS === 0) {
       const elapsedSec = Math.round((Date.now() - submittedAt) / 1000);
+      const committedCount = infos.filter(
+        (info) => !!info && info.data[CT_STATUS_OFFSET] === CT_STATUS_COMMITTED,
+      ).length;
       console.log(
-        `[onchain-FHE] still waiting for executor commit, ${elapsedSec}s elapsed (budget 120s) — tx ${settleSig.slice(0, 12)}…`,
+        `[onchain-FHE] waiting for executor commit, ${elapsedSec}s elapsed (budget 120s) — ` +
+          `${committedCount}/${infos.length} outputs committed — tx ${settleSig.slice(0, 12)}…`,
       );
     }
   }
   if (executorLatencyMs === 0) {
     throw new Error(
-      `onchain FHE executor didn't commit within 120s for tx ${settleSig}` +
-        ` — Encrypt pre-Alpha capacity issue, falling back to plaintext`,
+      `onchain FHE executor didn't commit within 120s for tx ${settleSig}`,
     );
   }
 
