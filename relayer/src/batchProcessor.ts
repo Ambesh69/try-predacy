@@ -371,61 +371,89 @@ export class BatchProcessor {
           elapsedMs: strictResult.elapsedMs,
         };
       } else if (this.privacyMode === "onchain-fhe") {
-        // ── On-chain FHE clearing via predacy-fhe Anchor program ──
-        // Submits orders + clearing_price through Encrypt's gRPC + on-chain
-        // CPI, gets back 4 byte-correct decrypted aggregates. Plaintext
-        // path computes clearing price first (the FHE graph takes it as
-        // input — clearing-price discovery itself is plaintext).
-        try {
-          const provider = new (await import("@coral-xyz/anchor")).AnchorProvider(
-            this.client.getConnection(),
-            new (await import("@coral-xyz/anchor")).Wallet(this.client.relayer),
-            { commitment: "confirmed" },
-          );
-          const program = loadPredacyFheProgram(provider as any);
-          const onchainResult = await computeOnchainFheClearing(
-            this.client.getConnection(),
-            this.client.relayer,
-            program,
-            orderList,
-            result.clearingPrice,
-          );
-          console.log(
-            `[BatchProcessor] ONCHAIN-FHE cleared: tx=${onchainResult.settleTxSig.slice(0, 12)}… ` +
-              `executor=${onchainResult.executorLatencyMs}ms total=${onchainResult.totalElapsedMs}ms`,
-          );
-          // Cross-check FHE aggregates against plaintext (they must match —
-          // any deviation indicates a graph bug or a real Encrypt FHE issue).
-          if (
-            onchainResult.filledYesBuyVol !== result.filledYesBuyVol ||
-            onchainResult.filledNoBuyVol !== result.filledNoBuyVol ||
-            onchainResult.filledYesSellQty !== result.filledYesSellQty ||
-            onchainResult.filledNoSellQty !== result.filledNoSellQty
-          ) {
-            console.warn(
-              `[BatchProcessor] ⚠ On-chain FHE result differs from plaintext: ` +
-                `yb=${onchainResult.filledYesBuyVol}/${result.filledYesBuyVol} ` +
-                `nb=${onchainResult.filledNoBuyVol}/${result.filledNoBuyVol} ` +
-                `ys=${onchainResult.filledYesSellQty}/${result.filledYesSellQty} ` +
-                `ns=${onchainResult.filledNoSellQty}/${result.filledNoSellQty} ` +
-                `(taking FHE result as source of truth)`,
+        // ── On-chain FHE clearing — async post-settlement attestation ──
+        //
+        // The FHE graph re-computes the same per-side aggregates that the
+        // plaintext path already produces (clearing price is a plaintext
+        // input either way). So FHE adds an *attestation* that those
+        // aggregates were derived correctly under encryption — but the
+        // settlement itself doesn't need it on the critical path.
+        //
+        // Encrypt's pre-Alpha executor latency is variable (typical 2-5s,
+        // spikes to 60-180s under load). Blocking the user-facing 30s batch
+        // SLA on it makes settlement feel slow. So we kick FHE off as a
+        // background job, settle the batch immediately on plaintext, and
+        // patch the settlement stats record when FHE eventually commits
+        // (or log failure if Encrypt's executor never responds).
+        fheStats = {
+          backend: "onchain-encrypt-devnet-pending",
+          opCount: 0,
+          elapsedMs: 0,
+        };
+        // Capture the values we'll need inside the async block — they get
+        // mutated downstream by the rest of settlement.
+        const fhePlaintextSnapshot = {
+          yesBuyVol: result.filledYesBuyVol,
+          noBuyVol: result.filledNoBuyVol,
+          yesSellQty: result.filledYesSellQty,
+          noSellQty: result.filledNoSellQty,
+        };
+        const fheBatchKey = state.marketId.toString("hex");
+        // No await — runs in parallel with settlement. The batch flow below
+        // proceeds with plaintext aggregates (same numbers FHE would emit).
+        (async () => {
+          try {
+            const provider = new (await import("@coral-xyz/anchor")).AnchorProvider(
+              this.client.getConnection(),
+              new (await import("@coral-xyz/anchor")).Wallet(this.client.relayer),
+              { commitment: "confirmed" },
             );
+            const program = loadPredacyFheProgram(provider as any);
+            const onchainResult = await computeOnchainFheClearing(
+              this.client.getConnection(),
+              this.client.relayer,
+              program,
+              orderList,
+              result.clearingPrice,
+            );
+            console.log(
+              `[BatchProcessor] ONCHAIN-FHE attestation cleared (async): ` +
+                `tx=${onchainResult.settleTxSig.slice(0, 12)}… ` +
+                `executor=${onchainResult.executorLatencyMs}ms total=${onchainResult.totalElapsedMs}ms ` +
+                `for batch ${batchIndex}`,
+            );
+            // Cross-check vs the plaintext aggregates the batch settled with.
+            if (
+              onchainResult.filledYesBuyVol !== fhePlaintextSnapshot.yesBuyVol ||
+              onchainResult.filledNoBuyVol !== fhePlaintextSnapshot.noBuyVol ||
+              onchainResult.filledYesSellQty !== fhePlaintextSnapshot.yesSellQty ||
+              onchainResult.filledNoSellQty !== fhePlaintextSnapshot.noSellQty
+            ) {
+              console.warn(
+                `[BatchProcessor] ⚠ Async FHE diverged from plaintext settlement on batch ${batchIndex}: ` +
+                  `yb=${onchainResult.filledYesBuyVol}/${fhePlaintextSnapshot.yesBuyVol} ` +
+                  `nb=${onchainResult.filledNoBuyVol}/${fhePlaintextSnapshot.noBuyVol} ` +
+                  `(settlement already finalised — divergence is informational only)`,
+              );
+            }
+            // Patch the settlement stats record so /settlement-stats now
+            // reports the FHE attestation tx + executor latency.
+            const stat = this.settlementStats.get(batchIndex.toString());
+            if (stat) {
+              stat.fheBackend = "onchain-encrypt-devnet";
+              stat.fheElapsedMs = onchainResult.totalElapsedMs;
+            }
+          } catch (err: any) {
+            console.error(
+              `[BatchProcessor] Async on-chain FHE attestation failed for batch ${batchIndex}: ` +
+                `${err.message}. Settlement already finalised on plaintext aggregates.`,
+            );
+            const stat = this.settlementStats.get(batchIndex.toString());
+            if (stat) {
+              stat.fheBackend = "onchain-encrypt-devnet-failed";
+            }
           }
-          result.filledYesBuyVol = onchainResult.filledYesBuyVol;
-          result.filledNoBuyVol = onchainResult.filledNoBuyVol;
-          result.filledYesSellQty = onchainResult.filledYesSellQty;
-          result.filledNoSellQty = onchainResult.filledNoSellQty;
-          fheStats = {
-            backend: "onchain-encrypt-devnet",
-            opCount: 0, // on-chain graph emits ~70 ops; not tracked here
-            elapsedMs: onchainResult.totalElapsedMs,
-          };
-        } catch (err: any) {
-          console.error(
-            `[BatchProcessor] On-chain FHE clearing failed: ${err.message}. ` +
-              `Falling back to plaintext result.`,
-          );
-        }
+        })().catch(() => { /* outer catch fence; inner already handles */ });
       } else {
         console.log(`[BatchProcessor] Clearing price: ${result.clearingPrice} (${result.filledOrders.length} filled, ${result.unfilledOrders.length} unfilled)`);
       }
