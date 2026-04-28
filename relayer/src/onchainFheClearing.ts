@@ -296,11 +296,19 @@ async function settleOneChunk(
   const settleSig = await connection.sendTransaction(vtx, { skipPreflight: false });
   await connection.confirmTransaction(settleSig, "confirmed");
 
-  // 5. Poll for executor to commit new digests (typically 2-5s)
+  // 5. Poll for executor to commit new digests. Encrypt's pre-Alpha
+  // executor typically takes 2-5s but can spike to 30-90s under load
+  // (observed batches 277 ✓ at ~6s, 278 ✗ at >60s on 2026-04-28).
+  // Budget 120s; log progress every 20s so a slow batch is visible
+  // rather than feeling stuck. Plaintext fallback in batchProcessor
+  // catches the throw if even 120s isn't enough.
+  const POLL_INTERVAL_MS = 2000;
+  const POLL_MAX_ITERATIONS = 60;          // 60 × 2s = 120s budget
+  const PROGRESS_LOG_EVERY_ITERATIONS = 10; // every 20s
   const submittedAt = Date.now();
   let executorLatencyMs = 0;
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 2000));
+  for (let i = 0; i < POLL_MAX_ITERATIONS; i++) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
     const digests = await Promise.all(
       outputs.map(async kp => {
         const info = await connection.getAccountInfo(kp.publicKey);
@@ -311,9 +319,18 @@ async function settleOneChunk(
       executorLatencyMs = Date.now() - submittedAt;
       break;
     }
+    if ((i + 1) % PROGRESS_LOG_EVERY_ITERATIONS === 0) {
+      const elapsedSec = Math.round((Date.now() - submittedAt) / 1000);
+      console.log(
+        `[onchain-FHE] still waiting for executor commit, ${elapsedSec}s elapsed (budget 120s) — tx ${settleSig.slice(0, 12)}…`,
+      );
+    }
   }
   if (executorLatencyMs === 0) {
-    throw new Error(`onchain FHE executor didn't commit within 60s for tx ${settleSig}`);
+    throw new Error(
+      `onchain FHE executor didn't commit within 120s for tx ${settleSig}` +
+        ` — Encrypt pre-Alpha capacity issue, falling back to plaintext`,
+    );
   }
 
   // 6. request_output_decryption per output → poll DecryptionRequest accounts
