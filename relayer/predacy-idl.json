@@ -1,5 +1,5 @@
 {
-  "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY",
+  "address": "Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp",
   "metadata": {
     "name": "predacy",
     "version": "0.1.0",
@@ -121,7 +121,7 @@
           "name": "ika_program",
           "docs": [
             "The Ika dWallet program. Identified by address to prevent confused-deputy",
-            "attacks — only the real Ika program can be invoked.",
+            "attacks \u2014 only the real Ika program can be invoked.",
             "is invoked via CPI; no data reads from this account."
           ],
           "address": "87W54kGYFQ1rgWqMeu4XTPHWXWmXSQCcjm8vCTfiq1oY"
@@ -130,14 +130,14 @@
           "name": "ika_coordinator",
           "docs": [
             "Ika's DWalletCoordinator PDA (seeds: [b\"dwallet_coordinator\"] in Ika's program).",
-            "Read-only — the Ika program reads the current epoch from it."
+            "Read-only \u2014 the Ika program reads the current epoch from it."
           ]
         },
         {
           "name": "message_approval",
           "docs": [
             "The MessageApproval PDA to create. Seeds are enforced by Ika's",
-            "approve_message validation on its end — we pass it as an unchecked",
+            "approve_message validation on its end \u2014 we pass it as an unchecked",
             "account writable. Ika will init it with status=Pending."
           ],
           "writable": true
@@ -368,7 +368,7 @@
         {
           "name": "maker_usdc",
           "docs": [
-            "Maker's USDC destination — typically their ATA."
+            "Maker's USDC destination \u2014 typically their ATA."
           ],
           "writable": true
         },
@@ -484,7 +484,7 @@
         {
           "name": "nullifier",
           "docs": [
-            "Nullifier PDA — init fails if already exists (double-claim prevention)"
+            "Nullifier PDA \u2014 init fails if already exists (double-claim prevention)"
           ],
           "writable": true,
           "pda": {
@@ -525,7 +525,7 @@
         {
           "name": "recipient_account",
           "docs": [
-            "Recipient's token account for payout (can be any wallet — privacy)"
+            "Recipient's token account for payout (can be any wallet \u2014 privacy)"
           ],
           "writable": true
         },
@@ -825,11 +825,11 @@
     {
       "name": "commit_lp_capital_blind",
       "docs": [
-        "Tier 1 Blind LP deposit — same as commit_lp_capital but additionally",
+        "Tier 1 Blind LP deposit \u2014 same as commit_lp_capital but additionally",
         "stores a 32-byte Encrypt ciphertext public key in the LP position.",
         "The ciphertext is created off-chain by the relayer via gRPC",
         "`CreateInput` BEFORE this tx fires; we just persist the id.",
-        "See docs/LIQUIDITY.md §7 + Sprint 2.1 feasibility test."
+        "See docs/LIQUIDITY.md \u00a77 + Sprint 2.1 feasibility test."
       ],
       "discriminator": [
         27,
@@ -1112,9 +1112,9 @@
     {
       "name": "create_event_handle",
       "docs": [
-        "Create an EventHandle PDA — the unit of LP commitment that downstream",
+        "Create an EventHandle PDA \u2014 the unit of LP commitment that downstream",
         "markets inherit fee and graduation parameters from. See",
-        "docs/LIQUIDITY.md §4 for the full design rationale."
+        "docs/LIQUIDITY.md \u00a74 for the full design rationale."
       ],
       "discriminator": [
         153,
@@ -1419,7 +1419,7 @@
       "name": "init_bootstrap_pool",
       "docs": [
         "Initialise a Tier 0 LMSR Bootstrap Pool for a specific market.",
-        "Caller must be the EventHandle authority. See docs/LIQUIDITY.md §5.1."
+        "Caller must be the EventHandle authority. See docs/LIQUIDITY.md \u00a75.1."
       ],
       "discriminator": [
         209,
@@ -2303,7 +2303,7 @@
         {
           "name": "vault_usdc",
           "docs": [
-            "Vault's USDC token account — the source of payout. PDA-owned by",
+            "Vault's USDC token account \u2014 the source of payout. PDA-owned by",
             "`vault` so we can sign the transfer with vault seeds."
           ],
           "writable": true
@@ -2318,7 +2318,7 @@
         {
           "name": "cranker",
           "docs": [
-            "Whoever is cranking this — could be the depositor themselves or a",
+            "Whoever is cranking this \u2014 could be the depositor themselves or a",
             "relayer-sponsored auto-refund. Pays the rent for any account",
             "closures (none in v1; future close=position)."
           ],
@@ -2623,7 +2623,7 @@
     {
       "code": 6007,
       "name": "NullifierAlreadyUsed",
-      "msg": "Nullifier already used — double claim attempt"
+      "msg": "Nullifier already used \u2014 double claim attempt"
     },
     {
       "code": 6008,
@@ -2653,12 +2653,12 @@
     {
       "code": 6013,
       "name": "RescueDelayNotElapsed",
-      "msg": "Rescue delay not elapsed — must wait 7 days"
+      "msg": "Rescue delay not elapsed \u2014 must wait 7 days"
     },
     {
       "code": 6014,
       "name": "Unauthorized",
-      "msg": "Unauthorized — caller is not the authority"
+      "msg": "Unauthorized \u2014 caller is not the authority"
     },
     {
       "code": 6015,
@@ -2683,17 +2683,17 @@
     {
       "code": 6019,
       "name": "InvalidEventCategory",
-      "msg": "Invalid event category — must be 0..=4"
+      "msg": "Invalid event category \u2014 must be 0..=4"
     },
     {
       "code": 6020,
       "name": "InvalidEventTiming",
-      "msg": "Invalid event timing — closes_at must be in the future"
+      "msg": "Invalid event timing \u2014 closes_at must be in the future"
     },
     {
       "code": 6021,
       "name": "InvalidEventFees",
-      "msg": "Invalid fee parameters — treasury+rebates must equal taker bps"
+      "msg": "Invalid fee parameters \u2014 treasury+rebates must equal taker bps"
     },
     {
       "code": 6022,
@@ -2899,7 +2899,7 @@
           {
             "name": "event_handle",
             "docs": [
-              "EventHandle this pool was created under — for fee/graduation params."
+              "EventHandle this pool was created under \u2014 for fee/graduation params."
             ],
             "type": "pubkey"
           },
@@ -2914,15 +2914,15 @@
             "name": "current_q",
             "docs": [
               "Total collateral currently in the pool: seed + accrued buy-side",
-              "USDC − payouts. 6-decimal USDC."
+              "USDC \u2212 payouts. 6-decimal USDC."
             ],
             "type": "u64"
           },
           {
             "name": "b_param",
             "docs": [
-              "LS-LMSR `b` parameter. Recomputed on each fill as α × current_q",
-              "where α = LMSR_ALPHA_BPS / 10_000. Storing it explicitly so the",
+              "LS-LMSR `b` parameter. Recomputed on each fill as \u03b1 \u00d7 current_q",
+              "where \u03b1 = LMSR_ALPHA_BPS / 10_000. Storing it explicitly so the",
               "off-chain pricer doesn't have to recompute it."
             ],
             "type": "u64"
@@ -2945,8 +2945,8 @@
             "name": "graduated",
             "docs": [
               "Set by the relayer once the market hits the graduation threshold",
-              "(≥2 batches × ≥graduation_threshold_usdc). After this, bootstrap_fill",
-              "rejects all calls — Tier 1 LP vault takes over."
+              "(\u22652 batches \u00d7 \u2265graduation_threshold_usdc). After this, bootstrap_fill",
+              "rejects all calls \u2014 Tier 1 LP vault takes over."
             ],
             "type": "bool"
           },
@@ -3219,7 +3219,7 @@
             "name": "shares_plaintext",
             "docs": [
               "Plaintext share balance for v1. Becomes irrelevant in v2 once",
-              "`fhe_shares_ct` becomes the source of truth — but kept on-chain",
+              "`fhe_shares_ct` becomes the source of truth \u2014 but kept on-chain",
               "for the migration window."
             ],
             "type": "u64"
@@ -3254,7 +3254,7 @@
           {
             "name": "withdrawn",
             "docs": [
-              "Set true once withdrawn — prevents double-withdrawal."
+              "Set true once withdrawn \u2014 prevents double-withdrawal."
             ],
             "type": "bool"
           },
@@ -3280,7 +3280,7 @@
           {
             "name": "total_capital_usdc",
             "docs": [
-              "Public aggregate of all deposits, 6-decimal USDC. Always plaintext —",
+              "Public aggregate of all deposits, 6-decimal USDC. Always plaintext \u2014",
               "transparency about total capital is a feature, not a privacy leak."
             ],
             "type": "u64"
@@ -3289,7 +3289,7 @@
             "name": "total_shares",
             "docs": [
               "Total virtual shares outstanding. Used to compute per-position pro-rata",
-              "payouts: payout = position.shares / total_shares × current vault NAV."
+              "payouts: payout = position.shares / total_shares \u00d7 current vault NAV."
             ],
             "type": "u64"
           },
@@ -3348,7 +3348,7 @@
             "name": "credit",
             "docs": [
               "Cumulative credit. Per-fill credits are added on accrue_maker_credit.",
-              "Future v2: weight by `volume × distance_from_mid_bps` for sharper",
+              "Future v2: weight by `volume \u00d7 distance_from_mid_bps` for sharper",
               "price-improvement incentives (Limitless pattern)."
             ],
             "type": "u64"
