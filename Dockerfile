@@ -10,6 +10,15 @@ FROM node:20-slim
 
 WORKDIR /app
 
+# 0. Install build toolchain so `node-gyp` can compile native deps at install
+#    time. Required for `bigint-buffer` (transitive dep of @solana/web3.js).
+#    Without these the binding falls back to pure JS and emits the noisy
+#    "Failed to load bindings" warning on every boot. Install + apt cache
+#    cleanup in one RUN to keep image lean.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # 1. Install deps from package.json + lockfile only (best build cache).
 COPY relayer/package.json relayer/package-lock.json* ./
 RUN npm install --production=false
