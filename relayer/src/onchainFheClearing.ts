@@ -44,16 +44,34 @@ function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): [PublicKey, 
   return PublicKey.findProgramAddressSync(seeds, programId);
 }
 
+/**
+ * Encrypt's executor mock-ciphertext format (commit 303439d, synced with
+ * the devnet executor at 4ebfzWdKnrnGseuQpezXdG8yCdHqwQ1SSBHD3bWArND8).
+ *
+ * Uniform 17-byte layout regardless of FHE type:
+ *   byte 0   : fhe_type tag (1=EUint8, 4=EUint64, etc.)
+ *   bytes 1-16: value as 16-byte little-endian
+ *
+ * Pre-303439d we emitted 2-byte EUint8 / 9-byte EUint64. That format is
+ * still accepted by gRPC `CreateInput` (which doesn't strictly validate)
+ * but the executor's newer graph evaluator silently rejects, leaving
+ * `settle_fhe_batch` to commit nothing → we observed it as polling
+ * timeout. Diagnosed via Fesal @ Encrypt 2026-04-28; matches our
+ * batches 278/279 stalling at >120s after weeks of clean ~6s runs.
+ *
+ * The 16-byte value space is wider than any single FHE primitive; for
+ * EUint64 we LE-write the lower 8 bytes and zero-pad the upper 8.
+ */
 function mockCt(fheType: number, value: bigint): Buffer {
-  if (fheType === FHE_TYPE_UINT8) {
-    const b = Buffer.alloc(2);
-    b[0] = FHE_TYPE_UINT8;
-    b[1] = Number(value & 0xffn);
-    return b;
+  const b = Buffer.alloc(17);
+  b[0] = fheType;
+  // Write up to 16 LE bytes — works for any unsigned int up to 128 bits.
+  // For EUint8 only b[1] is significant; for EUint64, b[1..9].
+  let v = value;
+  for (let i = 1; i <= 16; i++) {
+    b[i] = Number(v & 0xffn);
+    v >>= 8n;
   }
-  const b = Buffer.alloc(9);
-  b[0] = FHE_TYPE_UINT64;
-  b.writeBigUInt64LE(value, 1);
   return b;
 }
 
