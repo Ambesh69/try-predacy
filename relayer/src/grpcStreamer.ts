@@ -47,6 +47,16 @@ export class GrpcStreamer extends EventEmitter {
   private stream: any = null;
   private running = false;
   private reconnectAttempts = 0;
+  // Set true once the *first* Subscribe round-trip completes. Distinguishes
+  // "endpoint genuinely unreachable" (auth, allowlist, wrong URL) from
+  // transient drops on a previously-healthy stream — only the former should
+  // hit the give-up path.
+  private everConnected = false;
+  // Dedupe flag: gRPC fires both `error` and `end` on a dropped stream, often
+  // in the same tick. Without this, each drop double-counts the attempt
+  // counter and schedules two parallel reconnects (fan-out grows
+  // exponentially). Cleared after the backoff timer fires.
+  private reconnectScheduled = false;
 
   constructor(config: Config) {
     super();
@@ -80,15 +90,30 @@ export class GrpcStreamer extends EventEmitter {
 
   async stop(): Promise<void> {
     this.running = false;
+    this.cleanupConnection();
+  }
+
+  /** Tear down the current stream + client. Called on every disconnect
+   *  (before scheduling a reconnect) and on stop(). Removing listeners
+   *  before cancel() ensures the cancel-induced final `end` doesn't
+   *  re-trigger handleEnd on the stale connection. */
+  private cleanupConnection(): void {
     if (this.stream) {
-      try {
-        this.stream.end();
-      } catch { /* noop */ }
+      try { this.stream.removeAllListeners(); } catch { /* noop */ }
+      try { this.stream.cancel(); } catch { /* noop */ }
       this.stream = null;
+    }
+    if (this.client) {
+      try { this.client.close(); } catch { /* noop */ }
+      this.client = null;
     }
   }
 
   private async connect(): Promise<void> {
+    // Defensive: if a previous stream/client lingered (e.g., connect() was
+    // re-entered without going through scheduleReconnect), drop it now so
+    // we never have two parallel subscriptions racing.
+    this.cleanupConnection();
     try {
       // Locate geyser.proto next to the compiled relayer (we copy the .proto
       // files into /app/proto/ at Docker build time). __dirname resolves to
@@ -171,6 +196,7 @@ export class GrpcStreamer extends EventEmitter {
 
       console.log(`[grpcStreamer] Subscribed to program ${this.config.programId}`);
       this.reconnectAttempts = 0;
+      this.everConnected = true;
     } catch (err: any) {
       console.error("[grpcStreamer] Connection failed:", err.message);
       this.scheduleReconnect();
@@ -212,20 +238,36 @@ export class GrpcStreamer extends EventEmitter {
 
   private scheduleReconnect(): void {
     if (!this.running) return;
+    // Dedupe: gRPC normally fires `error` then `end` on a dropped stream.
+    // Both call this method; the second call is a no-op.
+    if (this.reconnectScheduled) return;
+    this.reconnectScheduled = true;
+
+    // Drop the dead client/stream now so /health (grpcConnected) reflects
+    // reality and we don't leak the underlying HTTP/2 channel.
+    this.cleanupConnection();
+
     this.reconnectAttempts += 1;
-    // Circuit-breaker: after 5 consecutive failures, give up. The WSS
-    // log streamer is the primary path; gRPC was an opt-in latency
-    // upgrade. If the gRPC endpoint is unreachable (auth, allowlist,
-    // entitlement), spamming reconnects forever just pollutes logs.
-    if (this.reconnectAttempts > 5) {
-      console.warn("[grpcStreamer] Giving up after 5 failed reconnects — falling back to WSS log streamer (primary path)");
+    // Circuit-breaker scope: only for the *initial* connect path. If we
+    // never managed to subscribe once, the endpoint is misconfigured (auth,
+    // allowlist, wrong URL) and reconnect spam pollutes logs without value.
+    // Once we've successfully subscribed, every drop is treated as
+    // transient (idle timeout, edge restart) and we keep retrying — that's
+    // the entire point of having a streamer.
+    if (!this.everConnected && this.reconnectAttempts > 5) {
+      console.warn("[grpcStreamer] Giving up after 5 failed initial connects — gRPC endpoint unreachable, falling back to WSS log streamer (primary path)");
       this.running = false;
+      this.reconnectScheduled = false;
       return;
     }
-    // Exponential backoff, cap at 30s
-    const delay = Math.min(30_000, 1_000 * Math.pow(2, this.reconnectAttempts));
+    // Exponential backoff. Cap at 60s for transient drops on a previously
+    // healthy stream so we resume quickly; 30s for initial failures since
+    // we're going to give up after 5 anyway.
+    const cap = this.everConnected ? 60_000 : 30_000;
+    const delay = Math.min(cap, 1_000 * Math.pow(2, this.reconnectAttempts));
     console.log(`[grpcStreamer] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
     setTimeout(() => {
+      this.reconnectScheduled = false;
       if (this.running) this.connect();
     }, delay);
   }
