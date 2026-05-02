@@ -41,7 +41,7 @@ export function useLiveEvents(): LiveEventsState {
   const handlersRef = useRef<Map<string, Set<(e: LiveEvent) => void>>>(new Map());
 
   useEffect(() => {
-    const es = new EventSource(`${RELAYER_URL}/events`);
+    const es = new EventSource(`${RELAYER_URL}/stream`);
 
     es.addEventListener("open", () => setConnected(true));
     es.addEventListener("error", () => setConnected(false));

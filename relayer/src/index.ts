@@ -333,7 +333,7 @@ app.post("/ika/sign", async (req, res) => {
 // on-chain events (commit_order, settle_batch, claim) in near-real time.
 // When gRPC is disabled, this endpoint stays open but emits no events —
 // frontend should fall back to /batch-status polling.
-app.get("/events", (req, res) => {
+app.get("/stream", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
