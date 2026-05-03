@@ -22,6 +22,9 @@ export type EventCategory = "LiveStream" | "Sports" | "Crypto" | "Politics" | "C
 export interface EventDescriptor {
   /** Hex-encoded 32-byte handle id (sha256 of label). */
   handleId: string;
+  /** Original human-readable label. Optional — older entries created
+   *  before the label field was added on the relayer may not have one. */
+  label?: string;
   category: EventCategory;
   /** Base58 PDA on Solana. */
   eventHandlePda: string;

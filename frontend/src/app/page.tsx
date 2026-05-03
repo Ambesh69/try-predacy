@@ -3,16 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import EventCard from "@/components/EventCard";
+import PredacyEventCard from "@/components/PredacyEventCard";
 import WalletButton from "@/components/WalletButton";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 import { MOCK_MARKETS, getEvents, type PolyEvent } from "@/lib/polymarket";
 import { getRelayerUrl } from "@/lib/relayerUrl";
+import { listEvents, type EventDescriptor } from "@/lib/lpApi";
 import {
   filterAndSortEvents,
   type DiscoverySort,
 } from "@/lib/discovery";
+
+type DiscoveryTab = "markets" | "events";
 
 const TICKER_ITEMS = [
   "SEALED BIDS",
@@ -37,6 +41,9 @@ export default function HomePage() {
   const [recentlyLiveEventIds, setRecentlyLiveEventIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<DiscoverySort>("volume_desc");
+  const [tab, setTab] = useState<DiscoveryTab>("markets");
+  const [predacyEvents, setPredacyEvents] = useState<EventDescriptor[]>([]);
+  const [predacyLoading, setPredacyLoading] = useState(false);
   const prevLiveMarketIdsRef = useRef<Set<string>>(new Set());
   const shimmerTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -105,6 +112,25 @@ export default function HomePage() {
     const timers = shimmerTimersRef.current;
     return () => { for (const timer of timers.values()) clearTimeout(timer); timers.clear(); };
   }, []);
+
+  // Predacy EventHandles — registered by the relayer's POST /events. These
+  // are the LP-commitment unit (markets attach under them). Fetched once
+  // per tab switch and refreshed every 30s while the tab is active.
+  useEffect(() => {
+    if (tab !== "events") return;
+    let cancelled = false;
+    setPredacyLoading(true);
+    async function refresh() {
+      try {
+        const list = await listEvents();
+        if (!cancelled) setPredacyEvents(list);
+      } catch { /* keep prior list */ }
+      finally { if (!cancelled) setPredacyLoading(false); }
+    }
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [tab]);
 
   const displayedEvents = useMemo(() => {
     return filterAndSortEvents(events, { q: searchQuery, sort: sortBy });
@@ -191,70 +217,124 @@ export default function HomePage() {
       <main className="flex-1 px-4 md:px-6 py-6">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-5">
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-black text-text tracking-tight" style={{ fontFamily: "var(--font-display)" }}>ACTIVE MARKETS</h2>
-            {loading && <div className="w-3 h-3 border border-muted/40 border-t-transparent rounded-full animate-spin" />}
-          </div>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full lg:w-auto lg:max-w-[560px]">
-            <label className="flex items-center border border-border bg-surface px-3 py-2 focus-within:border-border-bright flex-1 min-w-0">
-              <svg className="w-3.5 h-3.5 text-muted mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="m21 21-4.3-4.3m1.8-5.2a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-              </svg>
-              <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search events, markets, tags..."
-                className="w-full bg-transparent text-[13px] text-text placeholder:text-muted-dim focus:outline-none" />
-            </label>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-muted tracking-widest uppercase">Sort</span>
-              <select value={sortBy} onChange={(e) => setSortBy(e.target.value as DiscoverySort)}
-                className="bg-surface border border-border text-[11px] text-text px-2.5 py-2 focus:outline-none focus:border-border-bright">
-                <option value="volume_desc">Highest Volume</option>
-                <option value="volume_asc">Lowest Volume</option>
-                <option value="ending_soon">Ending Soon</option>
-                <option value="newest">Latest Ending</option>
-              </select>
+            <div className="flex items-center border border-border bg-surface">
+              <button
+                type="button"
+                onClick={() => setTab("markets")}
+                className={`px-3 py-1.5 text-[11px] tracking-widest uppercase font-bold transition-colors ${
+                  tab === "markets" ? "bg-accent/10 text-accent" : "text-muted hover:text-text"
+                }`}
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                Markets
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab("events")}
+                className={`px-3 py-1.5 text-[11px] tracking-widest uppercase font-bold transition-colors border-l border-border ${
+                  tab === "events" ? "bg-accent/10 text-accent" : "text-muted hover:text-text"
+                }`}
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                Events
+                {predacyEvents.length > 0 && (
+                  <span className="ml-1.5 text-muted">({predacyEvents.length})</span>
+                )}
+              </button>
             </div>
+            {((tab === "markets" && loading) || (tab === "events" && predacyLoading)) && (
+              <div className="w-3 h-3 border border-muted/40 border-t-transparent rounded-full animate-spin" />
+            )}
           </div>
+          {tab === "markets" && (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full lg:w-auto lg:max-w-[560px]">
+              <label className="flex items-center border border-border bg-surface px-3 py-2 focus-within:border-border-bright flex-1 min-w-0">
+                <svg className="w-3.5 h-3.5 text-muted mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="m21 21-4.3-4.3m1.8-5.2a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+                </svg>
+                <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search events, markets, tags..."
+                  className="w-full bg-transparent text-[13px] text-text placeholder:text-muted-dim focus:outline-none" />
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted tracking-widest uppercase">Sort</span>
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value as DiscoverySort)}
+                  className="bg-surface border border-border text-[11px] text-text px-2.5 py-2 focus:outline-none focus:border-border-bright">
+                  <option value="volume_desc">Highest Volume</option>
+                  <option value="volume_asc">Lowest Volume</option>
+                  <option value="ending_soon">Ending Soon</option>
+                  <option value="newest">Latest Ending</option>
+                </select>
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="active-markets-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-border/90 shadow-[0_0_0_1px_rgba(78,163,255,0.08)]">
-          {loading && displayedEvents.length === 0
-            ? Array.from({ length: 8 }).map((_, i) => (
-                <div key={`skel-${i}`} className="bg-bg">
-                  <div className="border border-border bg-surface p-5 h-full flex flex-col gap-3 animate-pulse">
-                    <div className="flex gap-2">
-                      <div className="h-4 w-16 bg-border" />
-                      <div className="h-4 w-12 bg-border/60" />
-                    </div>
-                    <div className="h-4 w-4/5 bg-border/80" />
-                    <div className="h-4 w-3/5 bg-border/50" />
-                    <div className="flex items-end justify-between gap-3 pt-2">
-                      <div className="h-8 w-16 bg-border" />
-                      <div className="flex gap-1.5">
-                        <div className="h-6 w-14 bg-border/60" />
-                        <div className="h-6 w-14 bg-border/60" />
+        {tab === "markets" ? (
+          <>
+            <div className="active-markets-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-border/90 shadow-[0_0_0_1px_rgba(78,163,255,0.08)]">
+              {loading && displayedEvents.length === 0
+                ? Array.from({ length: 8 }).map((_, i) => (
+                    <div key={`skel-${i}`} className="bg-bg">
+                      <div className="border border-border bg-surface p-5 h-full flex flex-col gap-3 animate-pulse">
+                        <div className="flex gap-2">
+                          <div className="h-4 w-16 bg-border" />
+                          <div className="h-4 w-12 bg-border/60" />
+                        </div>
+                        <div className="h-4 w-4/5 bg-border/80" />
+                        <div className="h-4 w-3/5 bg-border/50" />
+                        <div className="flex items-end justify-between gap-3 pt-2">
+                          <div className="h-8 w-16 bg-border" />
+                          <div className="flex gap-1.5">
+                            <div className="h-6 w-14 bg-border/60" />
+                            <div className="h-6 w-14 bg-border/60" />
+                          </div>
+                        </div>
+                        <div className="h-[2px] w-full bg-border" />
+                        <div className="flex items-center justify-between pt-1">
+                          <div className="h-3 w-16 bg-border/60" />
+                          <div className="h-3 w-20 bg-border/40" />
+                        </div>
                       </div>
                     </div>
-                    <div className="h-[2px] w-full bg-border" />
-                    <div className="flex items-center justify-between pt-1">
-                      <div className="h-3 w-16 bg-border/60" />
-                      <div className="h-3 w-20 bg-border/40" />
-                    </div>
-                  </div>
+                  ))
+                : displayedEvents.map((event, idx) => {
+                    const shouldShimmer = idx < 2 || recentlyLiveEventIds.has(event.id);
+                    return (
+                      <div key={event.id} className={`bg-bg ${shouldShimmer ? "shimmer-card" : ""}`}>
+                        <EventCard event={event} liveMarketIds={liveMarketIds} />
+                      </div>
+                    );
+                  })}
+            </div>
+            {!loading && displayedEvents.length === 0 && (
+              <div className="mt-3 border border-border bg-surface/25 px-4 py-6 text-center">
+                <p className="text-sm text-muted">No markets match your filters.</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="border border-border bg-surface/40 px-4 py-3 mb-4 flex items-start gap-3">
+              <span className="text-accent text-[11px] tracking-widest uppercase mt-0.5">Predacy events</span>
+              <p className="text-[11px] text-muted leading-snug">
+                On-chain EventHandles registered via the relayer. Each event groups markets together for LP commitment, fee accrual, and graduation tracking. Click a card to provide liquidity.
+              </p>
+            </div>
+            <div className="active-markets-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-border/90 shadow-[0_0_0_1px_rgba(78,163,255,0.08)]">
+              {predacyEvents.map((ev) => (
+                <div key={ev.handleId} className="bg-bg">
+                  <PredacyEventCard event={ev} />
                 </div>
-              ))
-            : displayedEvents.map((event, idx) => {
-                const shouldShimmer = idx < 2 || recentlyLiveEventIds.has(event.id);
-                return (
-                  <div key={event.id} className={`bg-bg ${shouldShimmer ? "shimmer-card" : ""}`}>
-                    <EventCard event={event} liveMarketIds={liveMarketIds} />
-                  </div>
-                );
-              })}
-        </div>
-        {!loading && displayedEvents.length === 0 && (
-          <div className="mt-3 border border-border bg-surface/25 px-4 py-6 text-center">
-            <p className="text-sm text-muted">No markets match your filters.</p>
-          </div>
+              ))}
+            </div>
+            {!predacyLoading && predacyEvents.length === 0 && (
+              <div className="mt-3 border border-border bg-surface/25 px-4 py-6 text-center">
+                <p className="text-sm text-muted">No Predacy events registered yet.</p>
+                <p className="text-[11px] text-muted-dim mt-1">Operators register events via the relayer&apos;s <code className="text-accent">POST /events</code> endpoint.</p>
+              </div>
+            )}
+          </>
         )}
       </main>
 

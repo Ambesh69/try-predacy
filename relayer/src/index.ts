@@ -1099,21 +1099,35 @@ app.post("/events", async (req, res) => {
     const categoryNum = categoryMap[category] ?? 4;
 
     const handleId = deriveHandleId(label);
-    const txSig = await client.createEventHandle({
-      handleId,
-      category: categoryNum,
-      closesAt: BigInt(closesAt),
-      graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
-      graduationBatches,
-      feeBpsTaker,
-      feeBpsTreasury,
-      feeBpsRebates,
-      bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
-    });
-
+    const handleIdHex = handleIdToHex(handleId);
     const [eventHandlePda] = client.eventHandlePda(handleId);
+
+    // Try the on-chain create. If the EventHandle PDA already exists (rerun
+    // with the same label, or backfilling label after a previous create),
+    // skip + fall through to the ledger upsert so the new label still lands.
+    let txSig: string | null = null;
+    try {
+      txSig = await client.createEventHandle({
+        handleId,
+        category: categoryNum,
+        closesAt: BigInt(closesAt),
+        graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
+        graduationBatches,
+        feeBpsTaker,
+        feeBpsTreasury,
+        feeBpsRebates,
+        bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
+      });
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      const accountExists = msg.includes("already in use") || msg.includes("custom program error: 0x0");
+      if (!accountExists) throw err;
+      console.log(`[POST /events] EventHandle ${handleIdHex.slice(0, 8)}… exists on-chain, upserting label only`);
+    }
+
     const entry = eventLedger.register({
-      handleId: handleIdToHex(handleId),
+      handleId: handleIdHex,
+      label,
       category: category as any,
       eventHandlePda: eventHandlePda.toBase58(),
       authority: client.relayer.publicKey.toBase58(),
@@ -1126,11 +1140,12 @@ app.post("/events", async (req, res) => {
       bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
     });
 
-    // Also stand up the rebate pool — Tier 2 needs it before any fills happen.
+    // Also stand up the rebate pool — Tier 2 needs it before any fills
+    // happen. Idempotent on retries (rebate pool init also "already in use").
     try {
       await client.initRebatePool(eventHandlePda);
     } catch (err: any) {
-      // If init_rebate_pool fails (e.g., race), log + continue. Operator can retry.
+      // If init_rebate_pool fails (e.g., race or already-initialized), log + continue.
       console.warn(`[POST /events] initRebatePool warning: ${err.message}`);
     }
 
@@ -1150,6 +1165,7 @@ app.post("/events", async (req, res) => {
 app.get("/events", (_req, res) => {
   const events = eventLedger.list().map((ev) => ({
     handleId: ev.handleId,
+    label: ev.label,
     category: ev.category,
     eventHandlePda: ev.eventHandlePda,
     closesAt: ev.closesAt,

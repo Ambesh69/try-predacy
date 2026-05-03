@@ -29,6 +29,10 @@ export type EventCategory = "LiveStream" | "Sports" | "Crypto" | "Politics" | "C
 export interface EventHandleEntry {
   /** 32-byte handle ID, hex-encoded for the ledger file. */
   handleId: string;
+  /** Original human-readable label that was hashed to produce handleId.
+   *  Off-chain only — not stored on-chain (handleId is canonical there).
+   *  Optional because pre-label entries from older deploys may lack it. */
+  label?: string;
   category: EventCategory;
   /** On-chain EventHandle PDA. */
   eventHandlePda: string;
@@ -72,10 +76,19 @@ export class EventLedger {
     this.loadFromDisk();
   }
 
-  /** Register a newly-created event. Idempotent on handle_id. */
+  /** Register a newly-created event. Idempotent on handle_id. If the entry
+   *  already exists, optionally backfills the label (everything else is
+   *  preserved) — lets operators rename or attach a label after the fact
+   *  without losing graduation/volume state. */
   register(entry: Omit<EventHandleEntry, "graduated" | "recentBatchVolumes" | "cumulativeVolumeUsdc" | "marketIds" | "registeredAt" | "closed">): EventHandleEntry {
     const existing = this.events.get(entry.handleId);
-    if (existing) return existing;
+    if (existing) {
+      if (entry.label && existing.label !== entry.label) {
+        existing.label = entry.label;
+        this.persist();
+      }
+      return existing;
+    }
     const full: EventHandleEntry = {
       ...entry,
       graduated: false,
