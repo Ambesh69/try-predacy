@@ -353,8 +353,17 @@ export class StreamMonitor {
       throw new Error(`forceRefresh: extractor returned null for ${session.videoId}`);
     }
 
-    const oldNames = new Set(session.lineup.map((p) => p.name.toLowerCase()));
-    const entrants = lineup.players.filter((p) => !oldNames.has(p.name.toLowerCase()));
+    // Scrub any placeholder names that older extraction passes may have
+    // accumulated into session.lineup before the placeholder filter
+    // existed. One refresh cleans the state for free.
+    session.lineup = session.lineup.filter((p) => !isObviousPlaceholder(p.name));
+
+    // Punctuation-insensitive dedup so "ST WANG" and "ST. WANG" don't
+    // both register as separate players when computing entrants.
+    const canonicalize = (s: string): string =>
+      s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
+    const oldKeys = new Set(session.lineup.map((p) => canonicalize(p.name)));
+    const entrants = lineup.players.filter((p) => !oldKeys.has(canonicalize(p.name)));
 
     if (entrants.length > 0) {
       console.log(
@@ -698,6 +707,20 @@ export class StreamMonitor {
       console.error("[StreamMonitor] State persist failed:", err);
     }
   }
+}
+
+/** Match the lineupExtractor's placeholder filter so refresh can also
+ *  remove garbage that older extractions left in session.lineup. Kept
+ *  in lockstep with isPlaceholderName there. */
+function isObviousPlaceholder(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return true;
+  if (/^[0-9$,.]+$/.test(trimmed)) return true;
+  const lower = trimmed.toLowerCase();
+  return new Set([
+    "player name", "player", "name",
+    "seat 1", "seat 2", "n/a", "unknown", "tbd", "dealer", "host",
+  ]).has(lower);
 }
 
 /** Recover the player lineup from a stored event's marketLabels by

@@ -140,10 +140,12 @@ export class LineupExtractor {
     const numFrames = opts?.numFrames ?? DEFAULT_NUM_FRAMES;
     const intervalSec = opts?.intervalSec ?? DEFAULT_INTERVAL_SEC;
 
-    // Map keyed by lowercase name so different OCR captures of the same
-    // player (slight casing variations) collapse to one entry. We keep
-    // the seat from the *first* frame that saw them, since seat indices
-    // shift between hands and the first one is good enough as a label.
+    // Map keyed by punctuation-stripped lowercase name so different OCR
+    // captures of the same player (case + punctuation variation:
+    // "ST WANG" vs "ST. WANG", "phil  hellmuth" vs "Phil Hellmuth")
+    // collapse to one entry. We keep the seat from the *first* frame that
+    // saw them, since seat indices shift between hands and the first one
+    // is good enough as a label.
     const aggregated = new Map<string, Player>();
     let anyConfident = false;
     let framesAttempted = 0;
@@ -159,7 +161,9 @@ export class LineupExtractor {
         framesSucceeded++;
         if (single.confident) anyConfident = true;
         for (const p of single.players) {
-          const key = p.name.toLowerCase();
+          if (isPlaceholderName(p.name)) continue;
+          const key = canonicalNameKey(p.name);
+          if (!key) continue;
           if (!aggregated.has(key)) aggregated.set(key, p);
         }
         console.log(`[LineupExtractor] ${videoId} frame ${i + 1}/${numFrames}: ${single.players.length} player(s) (confident=${single.confident}); union=${aggregated.size}`);
@@ -331,6 +335,42 @@ Rules:
       hash: lineupHash(players),
     };
   }
+}
+
+/** Strip punctuation/whitespace and lowercase a name to produce a
+ *  canonical dedup key. "ST. WANG" and "ST WANG" map to the same key,
+ *  as do "Phil  Hellmuth" and "Phil Hellmuth". Returns empty string
+ *  when the input has no alpha-numeric content (caller skips). */
+function canonicalNameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+/** Reject obvious garbage that the model occasionally returns: literal
+ *  echoes of the prompt's example ("Player Name"), single-character
+ *  reads, or all-digit strings (which are usually chip stacks misread
+ *  as nameplates). Real broadcast nameplates are >= 2 letters. */
+function isPlaceholderName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return true;
+  if (/^[0-9$,.]+$/.test(trimmed)) return true;
+  const lower = trimmed.toLowerCase();
+  const placeholders = new Set([
+    "player name",
+    "player",
+    "name",
+    "seat 1",
+    "seat 2",
+    "n/a",
+    "unknown",
+    "tbd",
+    "dealer",
+    "host",
+  ]);
+  return placeholders.has(lower);
 }
 
 /** Stable hash over a lineup so we can compare across captures. The same
