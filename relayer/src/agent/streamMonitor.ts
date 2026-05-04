@@ -361,15 +361,29 @@ export class StreamMonitor {
       throw new Error(`forceRefresh: extractor returned null for ${session.videoId}`);
     }
 
-    // Scrub any placeholder names that older extraction passes may have
-    // accumulated into session.lineup before the placeholder filter
-    // existed. One refresh cleans the state for free.
-    session.lineup = session.lineup.filter((p) => !isObviousPlaceholder(p.name));
-
     // Punctuation-insensitive dedup so "ST WANG" and "ST. WANG" don't
-    // both register as separate players when computing entrants.
+    // both register as separate players. Used for both session.lineup
+    // canonicalisation and entrant detection.
     const canonicalize = (s: string): string =>
       s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
+
+    // Scrub placeholders AND collapse duplicates in session.lineup —
+    // older extraction passes (before the placeholder filter / punct-
+    // dedup landed) may have accumulated both "ST WANG" and "ST. WANG"
+    // as distinct entries. One refresh cleans the state for free.
+    {
+      const seen = new Set<string>();
+      const cleaned: Player[] = [];
+      for (const p of session.lineup) {
+        if (isObviousPlaceholder(p.name)) continue;
+        const k = canonicalize(p.name);
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        cleaned.push(p);
+      }
+      session.lineup = cleaned;
+    }
+
     const oldKeys = new Set(session.lineup.map((p) => canonicalize(p.name)));
     const entrants = lineup.players.filter((p) => !oldKeys.has(canonicalize(p.name)));
 
@@ -377,22 +391,34 @@ export class StreamMonitor {
     let droppedMarketIds: string[] | undefined;
 
     if (mode === "reseed") {
-      // Idempotently re-run newEntrantMarketsFor for every captured
-      // player — covers cases where the recheckLineup detected entrants
-      // but their seedMarketUnderEvent calls failed silently (e.g.
-      // under WSS-cap pressure before today's HTTP-poll fix). The
-      // safeSeed path is already idempotent on already-attached
-      // markets, so re-running on existing players is a no-op.
-      console.log(
-        `[StreamMonitor] forceRefresh(reseed) ${session.sessionLabel}: idempotently seeding ${lineup.players.length} captured player(s)`,
-      );
+      // Idempotently re-run newEntrantMarketsFor for every player we've
+      // ever associated with this session (cleaned session.lineup ∪
+      // freshly captured) — covers cases where recheckLineup detected
+      // an entrant historically but their seedMarketUnderEvent calls
+      // failed silently (e.g. under WSS-cap pressure before today's
+      // HTTP-poll fix), so they're in session.lineup but have no
+      // markets attached. safeSeed is idempotent on already-attached
+      // markets, so re-running on existing ones is a no-op.
+      const union = new Map<string, Player>();
+      for (const p of session.lineup) {
+        const k = canonicalize(p.name);
+        if (k && !union.has(k)) union.set(k, p);
+      }
       for (const p of lineup.players) {
+        const k = canonicalize(p.name);
+        if (k && !union.has(k)) union.set(k, p);
+      }
+      const seedTargets = Array.from(union.values());
+      console.log(
+        `[StreamMonitor] forceRefresh(reseed) ${session.sessionLabel}: idempotently seeding ${seedTargets.length} player(s) (cleaned-lineup ∪ fresh-capture)`,
+      );
+      for (const p of seedTargets) {
         const markets = newEntrantMarketsFor(session.sessionLabel, p);
         for (const m of markets) {
           await this.safeSeed(session.handleIdHex, m);
         }
       }
-      reseededPlayers = lineup.players.map((p) => p.name);
+      reseededPlayers = seedTargets.map((p) => p.name);
       // Fold in any genuine entrants too so session.lineup grows.
       if (entrants.length > 0) {
         session.lineup = [...session.lineup, ...entrants];
