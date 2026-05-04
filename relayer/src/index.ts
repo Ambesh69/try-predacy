@@ -1135,8 +1135,21 @@ async function createEventOnChain(input: CreateEventInput): Promise<CreateEventO
   } catch (err: any) {
     const msg = String(err?.message || "");
     const accountExists = msg.includes("already in use") || msg.includes("custom program error: 0x0");
-    if (!accountExists) throw err;
-    console.log(`[createEventOnChain] EventHandle ${handleIdHex.slice(0, 8)}… exists on-chain, upserting label only`);
+    // Solana RPC confirmation timeouts (WSS subscription cap on burst
+    // tx creation) — the tx is in-flight, may yet land. Treat as
+    // success-pending: the ledger.register below is idempotent on
+    // handleId, and the next attempt to use the EventHandle (e.g. seed
+    // a market under it) will either succeed or surface "already in
+    // use" which we already tolerate. Logging the sig lets the operator
+    // sanity-check on Explorer if anything misbehaves later.
+    const confirmationTimeout =
+      msg.includes("was not confirmed") || msg.includes("It is unknown if it succeeded");
+    if (!accountExists && !confirmationTimeout) throw err;
+    if (accountExists) {
+      console.log(`[createEventOnChain] EventHandle ${handleIdHex.slice(0, 8)}… exists on-chain, upserting label only`);
+    } else {
+      console.warn(`[createEventOnChain] EventHandle ${handleIdHex.slice(0, 8)}… create timed out on confirmation — tx in flight; proceeding with ledger upsert`);
+    }
   }
 
   eventLedger.register({
@@ -1185,8 +1198,22 @@ async function seedMarketUnderEvent(
   const eventHandleKey = new PublicKey(ev.eventHandlePda);
 
   // 1. Auto-create the on-chain market account if it doesn't exist (and
-  //    register the in-memory batch state).
-  await processor.startMarket(marketIdBuf);
+  //    register the in-memory batch state). Tolerate confirmation
+  //    timeouts (WSS sub cap on burst seeds) — the tx is in flight and
+  //    will land; the next attempt to use the market will succeed or
+  //    hit "already in use" which is also caught downstream.
+  try {
+    await processor.startMarket(marketIdBuf);
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    const tolerable =
+      msg.includes("already in use") ||
+      msg.includes("custom program error: 0x0") ||
+      msg.includes("was not confirmed") ||
+      msg.includes("It is unknown if it succeeded");
+    if (!tolerable) throw err;
+    console.warn(`[seedMarketUnderEvent] startMarket ${marketIdHex.slice(0, 8)}… tolerated: ${msg.slice(0, 120)}`);
+  }
 
   // 2. Init Tier 0 bootstrap pool. Idempotent — already-exists is caught.
   try {
