@@ -68,14 +68,30 @@ export interface EventLedgerSnapshot {
   lastSavedAt: number;
 }
 
-const DEFAULT_LEDGER_PATH = path.join(__dirname, "..", "event-ledger.json");
+// Persistence path resolution:
+//   1. explicit constructor arg (test override)
+//   2. LEDGER_PATH env (Railway volume — survives redeploys)
+//   3. fallback next to compiled relayer (dev convenience; ephemeral on Railway)
+const FALLBACK_LEDGER_PATH = path.join(__dirname, "..", "event-ledger.json");
 
 export class EventLedger {
   private events: Map<string, EventHandleEntry> = new Map();
   private storePath: string;
 
   constructor(storePath?: string) {
-    this.storePath = storePath || DEFAULT_LEDGER_PATH;
+    this.storePath = storePath
+      || process.env.LEDGER_PATH
+      || FALLBACK_LEDGER_PATH;
+    // Railway volumes mount at the configured path but the parent dir may
+    // not exist on first run. Create it before any writes happen so persist()
+    // doesn't crash on a fresh volume.
+    try {
+      const dir = path.dirname(this.storePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      console.error("[EventLedger] Could not ensure storage dir:", err);
+    }
+    console.log(`[EventLedger] Using store at ${this.storePath}`);
     this.loadFromDisk();
   }
 
