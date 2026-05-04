@@ -64,17 +64,20 @@ const PERSISTENT_BACKOFF_MS = 15 * 60_000;
 // Multi-frame sampling. Pro-poker broadcasts only overlay nameplates for
 // the players currently IN the hand (folded players' tiles disappear).
 // A single frame catches 1-3 names; the broadcast cycles to a wide-
-// angle "table view" with 6+ visible nameplates roughly once per ~60s.
-// 8 frames at 15s intervals gives ~120s coverage which reliably catches
-// at least one wide-angle shot, surfacing the full lineup in a single
-// extraction pass.
+// angle "table view" with 6+ visible nameplates roughly once per ~60-
+// 90s. We need a long enough window to catch at least one wide-angle.
 //
 // Empirical result on Triton Cash Game Invitational I:
-//   4 × 12s (48s) → 1-2 players (single hand only)
+//   4 × 12s ( 48s) → 1-2 players (single hand only)
 //   8 × 15s (120s) → 6 players (catches wide-angle shot)
+//  12 × 15s (180s) → 6-9 players (catches wide-angle reliably for HCL too)
 //
-// Cost: 8 × $0.003 = $0.024 per extraction. Cheap relative to value.
-const DEFAULT_NUM_FRAMES = 8;
+// HCL Streamer Showdown cycles wide-angles less often than Triton — 8
+// frames was hitting heads-up moments only and undercounting the table
+// at 4 players. 12 frames closes that gap.
+//
+// Cost: 12 × $0.003 = $0.036 per extraction. Negligible vs. value.
+const DEFAULT_NUM_FRAMES = 12;
 const DEFAULT_INTERVAL_SEC = 15;
 
 interface FailureRecord {
@@ -93,6 +96,15 @@ export class LineupExtractor {
 
   get enabled(): boolean {
     return !!this.apiKey;
+  }
+
+  /** Clear the failure-backoff for a specific videoId, or all videos when
+   *  called with no arg. Used by admin force-refresh: an operator wants a
+   *  fresh extraction RIGHT NOW even if a transient/persistent failure
+   *  was cached on a recent attempt. */
+  clearFailures(videoId?: string): void {
+    if (videoId) this.recentFailures.delete(videoId);
+    else this.recentFailures.clear();
   }
 
   /** Run the full pipeline: sample multiple frames over a window, OCR
@@ -241,7 +253,7 @@ export class LineupExtractor {
     const buf = await fsp.readFile(framePath);
     const b64 = buf.toString("base64");
 
-    const prompt = `You are looking at a live poker stream screenshot. Find every player nameplate visible — these are typically text overlays near each player's chip stack and hole cards, often along the bottom or sides of the frame.
+    const prompt = `You are looking at a live poker stream screenshot. Find EVERY player nameplate visible — text overlays near each player's chip stack and hole cards.
 
 Return ONLY valid JSON in this exact shape (no prose, no markdown fences):
 
@@ -254,13 +266,16 @@ Return ONLY valid JSON in this exact shape (no prose, no markdown fences):
 }
 
 Rules:
-- Return EVERY visible nameplate you can read, even if it's just one. Don't gate-keep — partial reads from action shots are useful.
+- Return EVERY visible nameplate. Don't gate-keep — partial reads from heads-up action shots are useful.
+- Two distinct shot types to handle:
+    1) ACTION SHOT (heads-up / 3-handed): only the players in the current hand have nameplates visible, usually anchored at bottom-left + bottom-right. Expect 1-3 names.
+    2) WIDE-ANGLE TABLE SHOT (overhead or perimeter view): you can see the full table felt with 5-9 nameplates arranged around the perimeter — top, sides, bottom. SCAN ALL EDGES of the frame, not just the bottom. Expect 5-9 names. Pro broadcasts (Triton, Hustler Casino Live, GG Poker, PokerGO) typically render each nameplate as a small chip-stack tile near each seat.
+- If you see a wide-angle / overhead shot, exhaustively enumerate every seat — do not stop at 4. Hustler Casino Live and Triton tables seat up to 9 players.
 - "confident" is true if you can clearly read AT LEAST ONE nameplate AND the screenshot is from an active poker session (not a sponsor reel, lobby screen, blank intermission card, or replay-stat overlay with no table visible). A partial table view counts.
 - If the frame is purely a title card, sponsor logo, or commercial break with no poker table visible at all, return {"confident": false, "players": []}.
-- "seat" is 1-based, left-to-right as visible. Use 0 if you can't tell.
+- "seat" is 1-based, left-to-right or clockwise from bottom-left as visible. Use 0 if you can't tell.
 - "name" is the exact nameplate text — preserve casing and accents. Don't add titles, country flags, chip stacks, or dollar amounts.
-- Skip dealer/admin/host nameplates if their role is obvious (e.g., labelled "DEALER", "HOST"). Otherwise include any name you can read.
-- Look carefully at the bottom-left and bottom-right corners — that's where Triton, HCL, and most pro broadcasts position the active-hand player nameplates.`;
+- Skip dealer/admin/host nameplates if their role is obvious (e.g., labelled "DEALER", "HOST"). Otherwise include any name you can read.`;
 
     const res = await fetch(`${OPENAI_API}/chat/completions`, {
       method: "POST",

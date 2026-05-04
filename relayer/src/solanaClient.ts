@@ -1,15 +1,95 @@
 import * as anchor from "@coral-xyz/anchor";
 import {
   Connection,
+  Commitment,
   Keypair,
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionConfirmationStrategy,
+  RpcResponseAndContext,
+  SignatureResult,
   ComputeBudgetProgram,
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import * as fs from "fs";
 import { Config } from "./config";
+
+/**
+ * Patch a Connection so confirmTransaction uses HTTP polling instead
+ * of WSS signatureSubscribe. Solana RPC providers cap concurrent WSS
+ * subscriptions at 50; under burst writes (e.g., 50+ markets seeded
+ * back-to-back, each with multiple init txs) the default sub-based
+ * confirmation path floods the JSON-RPC log with -32000 "Concurrent
+ * websocket subscription limit reached" errors, and Railway then
+ * starts dropping log lines under its rate limiter.
+ *
+ * getSignatureStatuses scales with normal RPC rate limits — far more
+ * headroom than WSS sub slots. We poll at 500ms with a 60s overall
+ * deadline (matches the original confirmTransaction expiry behavior).
+ *
+ * The patch preserves the original return shape so Anchor's
+ * sendAndConfirm sees `{ value: { err } }` and behaves identically.
+ */
+function patchConnectionForHttpConfirmation(conn: Connection): void {
+  const original = conn.confirmTransaction.bind(conn);
+  (conn as any).confirmTransaction = async function patched(
+    strategy: TransactionConfirmationStrategy | string,
+    commitment?: Commitment,
+  ): Promise<RpcResponseAndContext<SignatureResult>> {
+    const sig = typeof strategy === "string" ? strategy : strategy?.signature;
+    if (!sig) {
+      // Unknown shape — defer to the native path. Should never happen
+      // for our outbound writes (Anchor passes either a string or
+      // BlockhashWithExpiryBlockHeight, both of which expose `signature`).
+      return original(strategy as any, commitment);
+    }
+    return pollForSignatureStatus(conn, sig, commitment ?? "confirmed");
+  };
+}
+
+async function pollForSignatureStatus(
+  conn: Connection,
+  signature: string,
+  commitment: Commitment,
+): Promise<RpcResponseAndContext<SignatureResult>> {
+  const TIMEOUT_MS = 60_000;
+  const POLL_INTERVAL_MS = 500;
+  const reachedTarget = (cs?: string | null): boolean => {
+    if (commitment === "finalized") return cs === "finalized";
+    return cs === "confirmed" || cs === "finalized";
+  };
+
+  const start = Date.now();
+  while (Date.now() - start < TIMEOUT_MS) {
+    try {
+      const status = await conn.getSignatureStatuses([signature], {
+        searchTransactionHistory: false,
+      });
+      const v = status.value?.[0] as
+        | (SignatureResult & { confirmationStatus?: string | null })
+        | null;
+      if (v) {
+        if (v.err) {
+          return { context: status.context, value: { err: v.err } };
+        }
+        if (reachedTarget(v.confirmationStatus)) {
+          return { context: status.context, value: { err: null } };
+        }
+      }
+    } catch {
+      // Transient RPC blip — fall through to sleep+retry.
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  // Match the original error message shape so callers that key off
+  // "was not confirmed" / "It is unknown if it succeeded" keep working.
+  throw new Error(
+    `Transaction was not confirmed in ${(TIMEOUT_MS / 1000).toFixed(2)} seconds. ` +
+    `It is unknown if it succeeded or failed. Check signature ${signature} ` +
+    `using the Solana Explorer or CLI tools.`,
+  );
+}
 
 // PDA seed constants (must match Rust program)
 const PROTOCOL_SEED = Buffer.from("protocol");
@@ -49,6 +129,11 @@ export class SolanaClient {
       commitment: "confirmed",
       wsEndpoint: config.solanaWssUrl,
     });
+    // Re-route every confirmTransaction through HTTP polling so burst
+    // .rpc() writes don't blow past the 50-concurrent WSS subscription
+    // cap and flood logs with subscribe errors. wsEndpoint stays set —
+    // logStreamer still uses onLogs, which is bounded to 1-2 subs.
+    patchConnectionForHttpConfirmation(this.connection);
     this.relayer = config.relayerKeypair;
     this.programId = new PublicKey(config.programId);
 

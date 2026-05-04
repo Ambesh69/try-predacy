@@ -1409,6 +1409,36 @@ app.post("/agent/start-session", async (req, res) => {
 });
 
 /**
+ * POST /agent/sessions/:identifier/refresh
+ * Force a lineup re-extraction on an active session right now,
+ * bypassing both the 10-min recheck interval and the per-videoId
+ * failure backoff. Additive: any newly-seen players get their per-
+ * player markets seeded; existing markets stay untouched. Use when
+ * a session was created during a heads-up moment and only caught a
+ * partial lineup.
+ *
+ * `identifier` is either the lineup hash (session key) or the
+ * EventHandle hex — UI surfaces the handle hex on each card.
+ */
+app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
+  try {
+    const identifier = req.params.identifier;
+    if (!identifier) return res.status(400).json({ error: "identifier required" });
+    const t0 = Date.now();
+    const result = await streamMonitor.forceRefresh(identifier);
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - t0,
+      ...result,
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/sessions/:identifier/refresh] Error:", err.message);
+    const status = err.message?.includes("no active session") ? 404 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+/**
  * POST /agent/manual-tick?handleId=…&videoId=…
  * Debug endpoint — captures one game-state snapshot AND records it
  * into SessionStats under the given EventHandle. Lets us populate

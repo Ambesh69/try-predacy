@@ -257,6 +257,82 @@ export class StreamMonitor {
     return Object.values(this.state.active);
   }
 
+  /** Force a re-extraction on an active session right now, bypassing the
+   *  10-min recheck interval AND the per-videoId failure backoff. Behaves
+   *  like the periodic recheck for the additive-entrants path, but is
+   *  triggered on demand — used by the admin refresh endpoint when the
+   *  operator notices a session was started with an incomplete lineup
+   *  (e.g. heads-up moment captured at session start). Preserves the
+   *  EventHandle and existing markets; just adds per-player markets for
+   *  any newly-seen players.
+   *
+   *  `identifier` accepts either the lineup hash (session key) or the
+   *  EventHandle hex — operator-friendly, since the UI surfaces the
+   *  handleId on the event card.
+   *
+   *  Returns a structured result so callers can show the operator what
+   *  changed without having to diff state separately. */
+  async forceRefresh(identifier: string): Promise<{
+    sessionLabel: string;
+    handleIdHex: string;
+    videoId: string;
+    capturedPlayers: string[];
+    entrantsSeeded: string[];
+    lineupSize: number;
+  }> {
+    const idLower = identifier.toLowerCase();
+    const session = Object.values(this.state.active).find(
+      (s) => s.lineupHash === idLower || s.handleIdHex.toLowerCase() === idLower,
+    );
+    if (!session) {
+      throw new Error(`forceRefresh: no active session for ${identifier}`);
+    }
+
+    // Drop any cached failure for this videoId so a recent transient
+    // backoff doesn't silently make extract() return null.
+    this.extractor.clearFailures(session.videoId);
+
+    const lineup = await this.extractor.extract(session.videoId);
+    if (!lineup) {
+      throw new Error(`forceRefresh: extractor returned null for ${session.videoId}`);
+    }
+
+    const oldNames = new Set(session.lineup.map((p) => p.name.toLowerCase()));
+    const entrants = lineup.players.filter((p) => !oldNames.has(p.name.toLowerCase()));
+
+    if (entrants.length > 0) {
+      console.log(
+        `[StreamMonitor] forceRefresh ${session.sessionLabel}: ${entrants.length} new player(s): ${entrants.map((p) => p.name).join(", ")}`,
+      );
+      for (const p of entrants) {
+        const markets = newEntrantMarketsFor(session.sessionLabel, p);
+        for (const m of markets) {
+          await this.safeSeed(session.handleIdHex, m);
+        }
+      }
+      // Grow the session's lineup with the new entrants.
+      session.lineup = [...session.lineup, ...entrants];
+      session.lineupHash = lineupHash(session.lineup);
+      session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
+      this.persist();
+    } else {
+      console.log(
+        `[StreamMonitor] forceRefresh ${session.sessionLabel}: no new players (captured ${lineup.players.length}, all known)`,
+      );
+      session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
+      this.persist();
+    }
+
+    return {
+      sessionLabel: session.sessionLabel,
+      handleIdHex: session.handleIdHex,
+      videoId: session.videoId,
+      capturedPlayers: lineup.players.map((p) => p.name),
+      entrantsSeeded: entrants.map((p) => p.name),
+      lineupSize: session.lineup.length,
+    };
+  }
+
   // ─── Polling loop ───────────────────────────────────────────────────
 
   private async poll(): Promise<void> {
