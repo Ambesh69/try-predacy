@@ -61,6 +61,13 @@ export interface Lineup {
 const TRANSIENT_BACKOFF_MS = 90_000;
 const PERSISTENT_BACKOFF_MS = 15 * 60_000;
 
+// Multi-frame sampling. Pro-poker broadcasts only overlay nameplates for
+// the players currently IN the hand (folded players' tiles disappear).
+// A single frame catches 1-3 names; sampling across the rotation of
+// hands surfaces the full 6-9 player table over ~45 seconds.
+const DEFAULT_NUM_FRAMES = 4;
+const DEFAULT_INTERVAL_SEC = 12; // 4 frames × 12s gap = ~48s coverage
+
 interface FailureRecord {
   failedAt: number;
   reason: "transient" | "persistent";
@@ -79,14 +86,19 @@ export class LineupExtractor {
     return !!this.apiKey;
   }
 
-  /** Run the full pipeline: pull a frame, OCR it, return Lineup. Returns
-   *  null on hard failure (network down, video private, etc) — caller
-   *  should retry on next tick rather than crash.
+  /** Run the full pipeline: sample multiple frames over a window, OCR
+   *  each, union the player names found, return Lineup. Returns null
+   *  on hard failure (network down, video private, persistent OpenAI
+   *  quota issue) — caller should retry on next tick rather than crash.
+   *
+   *  Why multi-frame: broadcaster overlays only show players currently
+   *  in the hand. Sampling 4 frames over ~48s catches 4 different hand
+   *  groupings, which together usually cover the full 6-9 player table.
    *
    *  Honors a per-videoId backoff so we don't hammer OpenAI with the
    *  same failing request every poll. Backoff is longer for billing/auth
    *  failures than for transient network blips. */
-  async extract(videoId: string): Promise<Lineup | null> {
+  async extract(videoId: string, opts?: { numFrames?: number; intervalSec?: number }): Promise<Lineup | null> {
     if (!this.enabled) {
       console.warn("[LineupExtractor] OPENAI_API_KEY not set — extractor disabled");
       return null;
@@ -104,24 +116,81 @@ export class LineupExtractor {
       this.recentFailures.delete(videoId);
     }
 
-    let framePath: string | null = null;
-    try {
-      framePath = await this.captureFrame(videoId);
-      const lineup = await this.ocrFrame(framePath);
-      return lineup;
-    } catch (err: any) {
-      const msg = String(err?.message || "");
-      const persistent = /\b(401|403|429|insufficient_quota|invalid_api_key)\b/i.test(msg);
-      const reason: FailureRecord["reason"] = persistent ? "persistent" : "transient";
-      this.recentFailures.set(videoId, { failedAt: Date.now(), reason, message: msg });
-      const minutes = (persistent ? PERSISTENT_BACKOFF_MS : TRANSIENT_BACKOFF_MS) / 60_000;
-      console.error(`[LineupExtractor] extract(${videoId}) failed (${reason}, retrying in ${minutes}m): ${msg.slice(0, 200)}`);
-      return null;
-    } finally {
-      if (framePath) {
-        await fsp.unlink(framePath).catch(() => {});
+    const numFrames = opts?.numFrames ?? DEFAULT_NUM_FRAMES;
+    const intervalSec = opts?.intervalSec ?? DEFAULT_INTERVAL_SEC;
+
+    // Map keyed by lowercase name so different OCR captures of the same
+    // player (slight casing variations) collapse to one entry. We keep
+    // the seat from the *first* frame that saw them, since seat indices
+    // shift between hands and the first one is good enough as a label.
+    const aggregated = new Map<string, Player>();
+    let anyConfident = false;
+    let framesAttempted = 0;
+    let framesSucceeded = 0;
+    const t0 = Date.now();
+
+    for (let i = 0; i < numFrames; i++) {
+      framesAttempted++;
+      let framePath: string | null = null;
+      try {
+        framePath = await this.captureFrame(videoId);
+        const single = await this.ocrFrame(framePath);
+        framesSucceeded++;
+        if (single.confident) anyConfident = true;
+        for (const p of single.players) {
+          const key = p.name.toLowerCase();
+          if (!aggregated.has(key)) aggregated.set(key, p);
+        }
+        console.log(`[LineupExtractor] ${videoId} frame ${i + 1}/${numFrames}: ${single.players.length} player(s) (confident=${single.confident}); union=${aggregated.size}`);
+      } catch (err: any) {
+        const msg = String(err?.message || "");
+        const persistent = /\b(401|403|429|insufficient_quota|invalid_api_key)\b/i.test(msg);
+        if (persistent) {
+          // Bail out of the whole sampling pass — billing/auth issues
+          // won't resolve mid-loop and we'd just rack up more rejected
+          // requests. Surface the failure to the caller via backoff.
+          this.recentFailures.set(videoId, { failedAt: Date.now(), reason: "persistent", message: msg });
+          console.error(`[LineupExtractor] extract(${videoId}) persistent failure on frame ${i + 1}, retrying in ${PERSISTENT_BACKOFF_MS / 60_000}m: ${msg.slice(0, 200)}`);
+          return null;
+        }
+        // Transient — log and continue with the remaining frames.
+        console.warn(`[LineupExtractor] ${videoId} frame ${i + 1}/${numFrames} skipped (transient): ${msg.slice(0, 150)}`);
+      } finally {
+        if (framePath) await fsp.unlink(framePath).catch(() => {});
+      }
+
+      // Sleep between frames so we sample a meaningful temporal window.
+      // Skip the trailing sleep on the last iteration.
+      if (i < numFrames - 1) {
+        await new Promise((r) => setTimeout(r, intervalSec * 1000));
       }
     }
+
+    if (framesSucceeded === 0) {
+      this.recentFailures.set(videoId, {
+        failedAt: Date.now(),
+        reason: "transient",
+        message: `no successful frames out of ${framesAttempted}`,
+      });
+      console.error(`[LineupExtractor] extract(${videoId}) all ${framesAttempted} frames failed`);
+      return null;
+    }
+
+    // Re-number seats 1..N in name order so downstream marketTemplates
+    // gets stable indices regardless of which frame surfaced each player.
+    const players = Array.from(aggregated.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((p, idx) => ({ ...p, seat: idx + 1 }));
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+    console.log(`[LineupExtractor] ${videoId} extracted ${players.length} unique players across ${framesSucceeded}/${framesAttempted} frames in ${elapsed}s`);
+
+    return {
+      players,
+      capturedAt: Math.floor(Date.now() / 1000),
+      confident: anyConfident && players.length >= 2,
+      hash: lineupHash(players),
+    };
   }
 
   // ─── Step 1+2: yt-dlp + ffmpeg ──────────────────────────────────────

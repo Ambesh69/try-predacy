@@ -148,16 +148,31 @@ export class StreamMonitor {
     if (this.running) return;
     this.running = true;
     console.log(`[StreamMonitor] Starting · ${this.channels.length} channels · poll every ${POLL_INTERVAL_MS / 1000}s`);
-    this.poll().catch((err) => console.error("[StreamMonitor] First poll failed:", err.message));
-    this.timer = setInterval(() => {
-      this.poll().catch((err) => console.error("[StreamMonitor] Poll failed:", err.message));
-    }, POLL_INTERVAL_MS);
+    // Self-rescheduling loop: each poll's next run is scheduled AFTER it
+    // finishes, so a 45-60s lineup extraction can't get a second poll
+    // racing on top of it. setInterval would have fired at fixed intervals
+    // regardless of completion, causing overlapping OpenAI calls for the
+    // same videoId.
+    this.scheduleNext(0);
+  }
+
+  private scheduleNext(delayMs: number): void {
+    if (!this.running) return;
+    this.timer = setTimeout(async () => {
+      try {
+        await this.poll();
+      } catch (err: any) {
+        console.error("[StreamMonitor] Poll failed:", err.message);
+      } finally {
+        this.scheduleNext(POLL_INTERVAL_MS);
+      }
+    }, delayMs);
   }
 
   stop(): void {
     this.running = false;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -181,46 +196,52 @@ export class StreamMonitor {
     const now = Math.floor(Date.now() / 1000);
     this.state.lastPollAt = now;
 
-    for (const ch of this.channels) {
-      let live: { videoId: string; title: string }[] = [];
-      try {
-        live = await this.fetchLiveBroadcasts(ch.channelId);
-      } catch (err: any) {
-        console.warn(`[StreamMonitor] ${ch.tag} fetch failed: ${err.message}`);
+    // Process channels in parallel so a 45-60s lineup extraction on one
+    // channel doesn't block the other. Each channel's per-video work is
+    // still sequential (we don't want the same channel double-creating
+    // a session for the same lineup).
+    await Promise.all(this.channels.map((ch) => this.pollChannel(ch, now)));
+
+    this.persist();
+  }
+
+  private async pollChannel(ch: MonitoredChannel, now: number): Promise<void> {
+    let live: { videoId: string; title: string }[] = [];
+    try {
+      live = await this.fetchLiveBroadcasts(ch.channelId);
+    } catch (err: any) {
+      console.warn(`[StreamMonitor] ${ch.tag} fetch failed: ${err.message}`);
+      return;
+    }
+
+    const liveVideoIds = new Set(live.map((v) => v.videoId));
+    const activeForChannel = this.listActive().filter((s) => s.channelTag === ch.tag);
+
+    for (const v of live) {
+      const knownSession = activeForChannel.find((s) => s.videoId === v.videoId);
+
+      if (knownSession) {
+        // Existing video — touch lastSeen, do periodic re-OCR.
+        knownSession.lastSeenAt = now;
+        if (Date.now() - knownSession.lastLineupCheckAt * 1000 > LINEUP_RECHECK_MS) {
+          await this.recheckLineup(knownSession);
+          knownSession.lastLineupCheckAt = now;
+        }
         continue;
       }
 
-      const liveVideoIds = new Set(live.map((v) => v.videoId));
-      const activeForChannel = this.listActive().filter((s) => s.channelTag === ch.tag);
-
-      for (const v of live) {
-        const knownSession = activeForChannel.find((s) => s.videoId === v.videoId);
-
-        if (knownSession) {
-          // Existing video — touch lastSeen, do periodic re-OCR.
-          knownSession.lastSeenAt = now;
-          if (Date.now() - knownSession.lastLineupCheckAt * 1000 > LINEUP_RECHECK_MS) {
-            await this.recheckLineup(knownSession);
-            knownSession.lastLineupCheckAt = now;
-          }
-          continue;
-        }
-
-        // New videoId for this channel — extract lineup to identify session.
-        await this.handleNewLiveVideo(ch, v, now);
-      }
-
-      // Active sessions whose video disappeared from the live feed.
-      // Hold for OFFLINE_GRACE_MS before declaring ended.
-      for (const sess of activeForChannel) {
-        if (liveVideoIds.has(sess.videoId)) continue;
-        if (Date.now() - sess.lastSeenAt * 1000 > OFFLINE_GRACE_MS) {
-          this.endSession(sess, "video offline past grace period");
-        }
-      }
+      // New videoId for this channel — extract lineup to identify session.
+      await this.handleNewLiveVideo(ch, v, now);
     }
 
-    this.persist();
+    // Active sessions whose video disappeared from the live feed.
+    // Hold for OFFLINE_GRACE_MS before declaring ended.
+    for (const sess of activeForChannel) {
+      if (liveVideoIds.has(sess.videoId)) continue;
+      if (Date.now() - sess.lastSeenAt * 1000 > OFFLINE_GRACE_MS) {
+        this.endSession(sess, "video offline past grace period");
+      }
+    }
   }
 
   private async fetchLiveBroadcasts(channelId: string): Promise<{ videoId: string; title: string }[]> {
