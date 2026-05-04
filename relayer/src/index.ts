@@ -1071,67 +1071,60 @@ import { getLiquidityStack } from "./liquidityStack";
 const eventLedger = getEventLedger();
 const liquidityStack = getLiquidityStack(client, eventLedger);
 
-/**
- * POST /events
- * Operator-only — create a new EventHandle on-chain + register in ledger.
- * body: { label, category, closesAt, graduationThresholdUsdc?, graduationBatches?, feeBpsTaker?, feeBpsTreasury?, feeBpsRebates?, bootstrapSeedUsdc? }
- */
-app.post("/events", async (req, res) => {
+// ─── Shared event/market helpers ─────────────────────────────────────
+// Both the HTTP handlers (POST /events, POST /events/:id/markets) and the
+// stream-monitor agent need to create events / seed markets through the
+// same code path. Factored here so the agent doesn't drift from the
+// operator-API behavior (idempotency, rebate-pool init, label storage).
+
+const CATEGORY_NUM_MAP: Record<string, number> = {
+  LiveStream: 0, Sports: 1, Crypto: 2, Politics: 3, Custom: 4,
+};
+
+interface CreateEventInput {
+  label: string;
+  category?: string;
+  closesAt: number;
+  graduationThresholdUsdc?: string;
+  graduationBatches?: number;
+  feeBpsTaker?: number;
+  feeBpsTreasury?: number;
+  feeBpsRebates?: number;
+  bootstrapSeedUsdc?: string;
+}
+
+interface CreateEventOutput {
+  handleIdHex: string;
+  eventHandlePda: string;
+  txSig: string | null;
+}
+
+async function createEventOnChain(input: CreateEventInput): Promise<CreateEventOutput> {
+  const {
+    label,
+    category = "LiveStream",
+    closesAt,
+    graduationThresholdUsdc = "1000000000",   // $1k default
+    graduationBatches = 2,
+    feeBpsTaker = 30,
+    feeBpsTreasury = 10,
+    feeBpsRebates = 20,
+    bootstrapSeedUsdc = "100000000",          // $100 default
+  } = input;
+  const categoryNum = CATEGORY_NUM_MAP[category] ?? 4;
+
+  const handleId = deriveHandleId(label);
+  const handleIdHex = handleIdToHex(handleId);
+  const [eventHandlePda] = client.eventHandlePda(handleId);
+
+  // Try the on-chain create. If the EventHandle PDA already exists, the
+  // ledger upsert below still runs so the (possibly new) label persists.
+  let txSig: string | null = null;
   try {
-    const {
-      label,
-      category = "LiveStream",
-      closesAt,
-      graduationThresholdUsdc = "1000000000",   // $1k default
-      graduationBatches = 2,
-      feeBpsTaker = 30,
-      feeBpsTreasury = 10,
-      feeBpsRebates = 20,
-      bootstrapSeedUsdc = "100000000",          // $100 default
-    } = req.body || {};
-    if (!label || !closesAt) {
-      return res.status(400).json({ error: "label + closesAt required" });
-    }
-
-    const categoryMap: Record<string, number> = {
-      LiveStream: 0, Sports: 1, Crypto: 2, Politics: 3, Custom: 4,
-    };
-    const categoryNum = categoryMap[category] ?? 4;
-
-    const handleId = deriveHandleId(label);
-    const handleIdHex = handleIdToHex(handleId);
-    const [eventHandlePda] = client.eventHandlePda(handleId);
-
-    // Try the on-chain create. If the EventHandle PDA already exists (rerun
-    // with the same label, or backfilling label after a previous create),
-    // skip + fall through to the ledger upsert so the new label still lands.
-    let txSig: string | null = null;
-    try {
-      txSig = await client.createEventHandle({
-        handleId,
-        category: categoryNum,
-        closesAt: BigInt(closesAt),
-        graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
-        graduationBatches,
-        feeBpsTaker,
-        feeBpsTreasury,
-        feeBpsRebates,
-        bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
-      });
-    } catch (err: any) {
-      const msg = String(err?.message || "");
-      const accountExists = msg.includes("already in use") || msg.includes("custom program error: 0x0");
-      if (!accountExists) throw err;
-      console.log(`[POST /events] EventHandle ${handleIdHex.slice(0, 8)}… exists on-chain, upserting label only`);
-    }
-
-    const entry = eventLedger.register({
-      handleId: handleIdHex,
-      label,
-      category: category as any,
-      eventHandlePda: eventHandlePda.toBase58(),
-      authority: client.relayer.publicKey.toBase58(),
-      closesAt: Number(closesAt),
+    txSig = await client.createEventHandle({
+      handleId,
+      category: categoryNum,
+      closesAt: BigInt(closesAt),
       graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
       graduationBatches,
       feeBpsTaker,
@@ -1139,21 +1132,107 @@ app.post("/events", async (req, res) => {
       feeBpsRebates,
       bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
     });
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    const accountExists = msg.includes("already in use") || msg.includes("custom program error: 0x0");
+    if (!accountExists) throw err;
+    console.log(`[createEventOnChain] EventHandle ${handleIdHex.slice(0, 8)}… exists on-chain, upserting label only`);
+  }
 
-    // Also stand up the rebate pool — Tier 2 needs it before any fills
-    // happen. Idempotent on retries (rebate pool init also "already in use").
-    try {
-      await client.initRebatePool(eventHandlePda);
-    } catch (err: any) {
-      // If init_rebate_pool fails (e.g., race or already-initialized), log + continue.
-      console.warn(`[POST /events] initRebatePool warning: ${err.message}`);
+  eventLedger.register({
+    handleId: handleIdHex,
+    label,
+    category: category as any,
+    eventHandlePda: eventHandlePda.toBase58(),
+    authority: client.relayer.publicKey.toBase58(),
+    closesAt: Number(closesAt),
+    graduationThresholdUsdc: BigInt(graduationThresholdUsdc),
+    graduationBatches,
+    feeBpsTaker,
+    feeBpsTreasury,
+    feeBpsRebates,
+    bootstrapSeedUsdc: BigInt(bootstrapSeedUsdc),
+  });
+
+  // Stand up the rebate pool — Tier 2 needs it before any fills happen.
+  // Idempotent on retries (already-initialized error caught).
+  try {
+    await client.initRebatePool(eventHandlePda);
+  } catch (err: any) {
+    console.warn(`[createEventOnChain] initRebatePool warning: ${err.message}`);
+  }
+
+  return {
+    handleIdHex,
+    eventHandlePda: eventHandlePda.toBase58(),
+    txSig,
+  };
+}
+
+/** Idempotent: create the on-chain market if missing, init the bootstrap
+ *  pool, attach to the event in the ledger with a label. Used by the
+ *  agent to seed prop markets and by POST /events/:id/markets for
+ *  operator-driven attaches. */
+async function seedMarketUnderEvent(
+  eventHandleHex: string,
+  marketIdHex: string,
+  label: string,
+): Promise<void> {
+  const ev = eventLedger.get(eventHandleHex);
+  if (!ev) throw new Error(`seedMarketUnderEvent: unknown event ${eventHandleHex.slice(0, 8)}…`);
+
+  const marketIdBuf = Buffer.from(marketIdHex.replace("0x", ""), "hex");
+  const eventHandleKey = new PublicKey(ev.eventHandlePda);
+
+  // 1. Auto-create the on-chain market account if it doesn't exist (and
+  //    register the in-memory batch state).
+  await processor.startMarket(marketIdBuf);
+
+  // 2. Init Tier 0 bootstrap pool. Idempotent — already-exists is caught.
+  try {
+    await client.initBootstrapPool(marketIdBuf, eventHandleKey);
+  } catch (err: any) {
+    console.warn(`[seedMarketUnderEvent] initBootstrapPool warning for ${marketIdHex.slice(0, 8)}…: ${err.message}`);
+  }
+
+  // 3. Bind in the ledger with the human-readable label.
+  eventLedger.attachMarket(eventHandleHex, marketIdHex.toLowerCase().replace("0x", ""), label);
+}
+
+// ─── Stream-monitor agent ────────────────────────────────────────────
+// Polls YouTube Data API for the configured poker-stream channels going
+// live. On detection: creates an EventHandle for the session and seeds
+// the standard generic prop markets. Player-aware market instantiation
+// + transcript-based settlement get layered on by later phases.
+import { StreamMonitor } from "./agent/streamMonitor";
+
+const streamMonitor = new StreamMonitor({
+  apiKey: process.env.YOUTUBE_API_KEY ?? "",
+  ledger: eventLedger,
+  createEvent: async ({ label, category, closesAt }) => {
+    const out = await createEventOnChain({ label, category, closesAt });
+    return { handleIdHex: out.handleIdHex, eventHandlePda: out.eventHandlePda };
+  },
+  seedMarket: seedMarketUnderEvent,
+});
+streamMonitor.start();
+
+/**
+ * POST /events
+ * Operator-only — create a new EventHandle on-chain + register in ledger.
+ * body: { label, category, closesAt, graduationThresholdUsdc?, graduationBatches?, feeBpsTaker?, feeBpsTreasury?, feeBpsRebates?, bootstrapSeedUsdc? }
+ */
+app.post("/events", async (req, res) => {
+  try {
+    if (!req.body?.label || !req.body?.closesAt) {
+      return res.status(400).json({ error: "label + closesAt required" });
     }
-
+    const out = await createEventOnChain(req.body);
     res.json({
       ok: true,
-      txSig,
-      handleIdHex: entry.handleId,
-      eventHandlePda: entry.eventHandlePda,
+      txSig: out.txSig,
+      handleIdHex: out.handleIdHex,
+      eventHandlePda: out.eventHandlePda,
     });
   } catch (err: any) {
     console.error("[POST /events] Error:", err.message);
@@ -1195,24 +1274,11 @@ app.post("/events/:handleIdHex/markets", async (req, res) => {
     const handleIdHex = req.params.handleIdHex;
     const { marketId: marketIdHex, label } = req.body || {};
     if (!marketIdHex) return res.status(400).json({ error: "marketId required" });
-
-    const ev = eventLedger.get(handleIdHex);
-    if (!ev) return res.status(404).json({ error: "EventHandle not found in ledger" });
-
-    const marketIdBuf = Buffer.from(marketIdHex.replace("0x", ""), "hex");
-    const eventHandleKey = new (require("@solana/web3.js").PublicKey)(ev.eventHandlePda);
-
-    // Bootstrap pool init is idempotent at the chain layer — this call
-    // is a no-op (returns error) if it already exists. Catch + continue.
-    let bootstrapTxSig: string | null = null;
-    try {
-      bootstrapTxSig = await client.initBootstrapPool(marketIdBuf, eventHandleKey);
-    } catch (err: any) {
-      console.warn(`[POST /events/.../markets] initBootstrapPool warning: ${err.message}`);
+    if (!eventLedger.get(handleIdHex)) {
+      return res.status(404).json({ error: "EventHandle not found in ledger" });
     }
-
-    eventLedger.attachMarket(handleIdHex, marketIdHex.toLowerCase().replace("0x", ""), label);
-    res.json({ ok: true, bootstrapTxSig, marketCount: eventLedger.get(handleIdHex)!.marketIds.length });
+    await seedMarketUnderEvent(handleIdHex, marketIdHex, label);
+    res.json({ ok: true, marketCount: eventLedger.get(handleIdHex)!.marketIds.length });
   } catch (err: any) {
     console.error("[POST /events/.../markets] Error:", err.message);
     res.status(500).json({ error: err.message });
