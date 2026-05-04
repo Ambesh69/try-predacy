@@ -188,7 +188,10 @@ export class LineupExtractor {
     return {
       players,
       capturedAt: Math.floor(Date.now() / 1000),
-      confident: anyConfident && players.length >= 2,
+      // Confident if any single frame was confident AND we got at least
+      // one name. The union may grow further on subsequent extractions —
+      // streamMonitor's recheckLineup folds in new names over time.
+      confident: anyConfident && players.length >= 1,
       hash: lineupHash(players),
     };
   }
@@ -229,7 +232,7 @@ export class LineupExtractor {
     const buf = await fsp.readFile(framePath);
     const b64 = buf.toString("base64");
 
-    const prompt = `You are looking at a live poker stream screenshot. Extract the player nameplates visible at the table.
+    const prompt = `You are looking at a live poker stream screenshot. Find every player nameplate visible — these are typically text overlays near each player's chip stack and hole cards, often along the bottom or sides of the frame.
 
 Return ONLY valid JSON in this exact shape (no prose, no markdown fences):
 
@@ -242,11 +245,13 @@ Return ONLY valid JSON in this exact shape (no prose, no markdown fences):
 }
 
 Rules:
-- "confident" is true ONLY if you can clearly read at least 2 nameplates AND the screenshot shows an active poker table (not a thumbnail, intermission card, replay, sponsor reel, lobby screen, etc).
-- If the screenshot is a title/intermission/replay/non-table view, return {"confident": false, "players": []}.
-- "seat" is 1-based, ordered left-to-right as visible on screen. Use 0 if you cannot determine seat order.
-- "name" is the exact text on the nameplate, including any case/accents. Don't add titles, country flags, or stack sizes.
-- Skip dealer/admin nameplates if present.`;
+- Return EVERY visible nameplate you can read, even if it's just one. Don't gate-keep — partial reads from action shots are useful.
+- "confident" is true if you can clearly read AT LEAST ONE nameplate AND the screenshot is from an active poker session (not a sponsor reel, lobby screen, blank intermission card, or replay-stat overlay with no table visible). A partial table view counts.
+- If the frame is purely a title card, sponsor logo, or commercial break with no poker table visible at all, return {"confident": false, "players": []}.
+- "seat" is 1-based, left-to-right as visible. Use 0 if you can't tell.
+- "name" is the exact nameplate text — preserve casing and accents. Don't add titles, country flags, chip stacks, or dollar amounts.
+- Skip dealer/admin/host nameplates if their role is obvious (e.g., labelled "DEALER", "HOST"). Otherwise include any name you can read.
+- Look carefully at the bottom-left and bottom-right corners — that's where Triton, HCL, and most pro broadcasts position the active-hand player nameplates.`;
 
     const res = await fetch(`${OPENAI_API}/chat/completions`, {
       method: "POST",

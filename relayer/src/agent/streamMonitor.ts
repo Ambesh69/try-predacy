@@ -330,43 +330,56 @@ export class StreamMonitor {
     await this.startSession(ch, v, lineup, now);
   }
 
-  /** Re-OCR an active session and react to lineup changes. */
+  /** Re-OCR an active session and react to lineup changes.
+   *
+   *  Pro broadcasts only overlay nameplates for players currently in
+   *  the hand (folded players' tiles disappear). So a single capture
+   *  rarely sees the full 6-9 player table — it catches whoever happens
+   *  to be in the hands during the sampling window. We treat each
+   *  recheck as ADDITIVE: any newly-seen player gets folded into the
+   *  session's running lineup and per-player markets are seeded for
+   *  them. Over the session's first 30-60 min, this converges on the
+   *  full table even if no single capture saw everyone.
+   *
+   *  We only flip to "session ended, start a new one" when the OCR
+   *  shows a player set with very low overlap to what we've accumulated
+   *  — i.e. the table genuinely turned over (everyone left, new game). */
   private async recheckLineup(session: ActiveSession): Promise<void> {
     const lineup = await this.extractor.extract(session.videoId);
-    if (!lineup || !lineup.confident) {
-      // Not confident — don't act on it. Could be a hand transition, a
-      // close-up shot, etc. The next recheck in 10 min will retry.
-      return;
-    }
+    if (!lineup || !lineup.confident || lineup.players.length === 0) return;
 
-    if (lineup.hash === session.lineupHash) return; // unchanged
-
-    // Compare name sets to decide entrant vs full-turnover.
     const oldNames = new Set(session.lineup.map((p) => p.name.toLowerCase()));
     const newNames = new Set(lineup.players.map((p) => p.name.toLowerCase()));
 
+    // Same set of players — nothing to do.
+    if (oldNames.size === newNames.size && [...newNames].every((n) => oldNames.has(n))) {
+      return;
+    }
+
+    // Compute overlap on the *original* old set. Note the asymmetry:
+    // we measure how many of the just-seen players were already known.
+    // This prevents an edge case where the broadcast happens to show
+    // 2 brand-new sub-in players in a single frame and we'd otherwise
+    // declare turnover even though 5 known players are still seated.
     let intersection = 0;
     for (const n of newNames) if (oldNames.has(n)) intersection++;
+    const newSeenButKnown = intersection / Math.max(newNames.size, 1);
 
-    const overlapRatio = intersection / Math.max(oldNames.size, newNames.size, 1);
-    if (overlapRatio < 0.5) {
-      // Mostly different players → previous session is done.
-      console.log(`[StreamMonitor] ${session.channelTag} lineup turnover detected (overlap=${(overlapRatio * 100).toFixed(0)}%) — ending ${session.sessionLabel}`);
+    if (newSeenButKnown < 0.2 && oldNames.size > 2) {
+      // Almost none of the new capture is recognised AND we had more
+      // than 2 players accumulated — the table has genuinely turned
+      // over. End this session; next discovery will pick up the new
+      // lineup as a fresh session.
+      console.log(`[StreamMonitor] ${session.channelTag} lineup turnover at ${session.sessionLabel} (${(newSeenButKnown * 100).toFixed(0)}% match to known) — ending session`);
       this.endSession(session, "lineup turnover");
-      // Next poll will re-detect the new lineup as a fresh session.
       return;
     }
 
-    // Partial overlap → option-A behavior: add markets for new entrants.
+    // Otherwise: additive. Any name we haven't seen before is an entrant.
     const entrants = lineup.players.filter((p) => !oldNames.has(p.name.toLowerCase()));
-    if (entrants.length === 0) {
-      // Players left but no one new sat down — reseating, no markets to add.
-      session.lineup = lineup.players;
-      session.lineupHash = lineup.hash;
-      return;
-    }
+    if (entrants.length === 0) return;
 
-    console.log(`[StreamMonitor] ${session.channelTag} ${entrants.length} new entrant(s) at ${session.sessionLabel}: ${entrants.map((p) => p.name).join(", ")}`);
+    console.log(`[StreamMonitor] ${session.channelTag} ${entrants.length} new player(s) at ${session.sessionLabel}: ${entrants.map((p) => p.name).join(", ")}`);
     for (const p of entrants) {
       const markets = newEntrantMarketsFor(session.sessionLabel, p);
       for (const m of markets) {
@@ -374,11 +387,13 @@ export class StreamMonitor {
       }
     }
 
-    // Update session state to reflect the new lineup. Note we deliberately
-    // keep the same handleIdHex / sessionLabel — the session continues,
-    // just with extra players covered.
-    session.lineup = lineup.players;
-    session.lineupHash = lineup.hash;
+    // Grow the session's lineup with the new entrants — keep the prior
+    // players too since they're still part of this session even if they
+    // weren't in any of the just-sampled frames.
+    const merged = [...session.lineup];
+    for (const p of entrants) merged.push(p);
+    session.lineup = merged;
+    session.lineupHash = lineupHash(merged);
   }
 
   private async startSession(
