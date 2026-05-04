@@ -1299,6 +1299,89 @@ app.post("/agent/snapshot", async (req, res) => {
 });
 
 /**
+ * POST /agent/start-session?videoId=…&channelTag=…
+ * Debug endpoint — manually run the full session-start path that the
+ * monitor would normally trigger after a YouTube poll discovers a new
+ * live video. Useful for bootstrapping demo data without waiting for
+ * the YouTube quota to reset.
+ *
+ * Pipeline (mirrors streamMonitor.startSession):
+ *   1. Multi-frame lineup extract (8 × 15s by default — full table read)
+ *   2. Compute session label = "{TAG}-SESSION-{date}-{lineup_hash8}"
+ *   3. Create EventHandle on-chain (idempotent on label)
+ *   4. Seed generic + player-aware + head-to-head markets
+ *
+ * Returns the lineup + the event id so the operator can verify.
+ */
+app.post("/agent/start-session", async (req, res) => {
+  try {
+    const videoId = (req.query.videoId as string) || "";
+    const channelTag = ((req.query.channelTag as string) || "").toUpperCase();
+    if (!videoId || !channelTag) {
+      return res.status(400).json({ error: "videoId + channelTag required" });
+    }
+    if (!["TRITON", "HCL"].includes(channelTag)) {
+      return res.status(400).json({ error: "channelTag must be TRITON or HCL" });
+    }
+
+    // Lazy-load the templates — keeps the import line tidy.
+    const { genericMarketsFor, playerMarketsFor } = await import("./agent/marketTemplates");
+
+    const t0 = Date.now();
+    const lineup = await debugExtractor.extract(videoId);
+    if (!lineup || !lineup.confident || lineup.players.length === 0) {
+      return res.status(502).json({
+        error: "lineup extract failed or non-confident",
+        elapsedMs: Date.now() - t0,
+        lineup,
+      });
+    }
+
+    const date = new Date().toISOString().slice(0, 10);
+    const sessionLabel = `${channelTag}-SESSION-${date}-${lineup.hash.slice(0, 8)}`;
+    const closesAt = Math.floor(Date.now() / 1000) + 12 * 3600;
+
+    const ev = await createEventOnChain({
+      label: sessionLabel,
+      category: "LiveStream",
+      closesAt,
+    });
+
+    // Seed generic + player-aware markets. Errors per-market are caught
+    // so a single failure doesn't abort the whole seeding pass.
+    const seededLabels: string[] = [];
+    const failed: string[] = [];
+    const allMarkets = [
+      ...genericMarketsFor(channelTag as any, sessionLabel),
+      ...playerMarketsFor(sessionLabel, lineup.players),
+    ];
+    for (const m of allMarkets) {
+      try {
+        await seedMarketUnderEvent(ev.handleIdHex, m.marketIdHex, m.label);
+        seededLabels.push(m.label);
+      } catch (err: any) {
+        failed.push(`${m.label} (${err.message?.slice(0, 80) ?? "?"})`);
+      }
+    }
+
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - t0,
+      sessionLabel,
+      handleIdHex: ev.handleIdHex,
+      eventHandlePda: ev.eventHandlePda,
+      lineup: lineup.players,
+      seededCount: seededLabels.length,
+      failedCount: failed.length,
+      failed,
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/start-session] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /agent/manual-tick?handleId=…&videoId=…
  * Debug endpoint — captures one game-state snapshot AND records it
  * into SessionStats under the given EventHandle. Lets us populate
