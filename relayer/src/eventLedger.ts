@@ -55,6 +55,9 @@ export interface EventHandleEntry {
   cumulativeVolumeUsdc: bigint;
   /** Markets created under this event. */
   marketIds: string[];
+  /** Optional human-readable label per attached market, keyed by marketId hex.
+   *  Set by `POST /events/:id/markets` when a label is provided. */
+  marketLabels?: Record<string, string>;
   /** When this event was first registered (ledger-side). */
   registeredAt: number;
   closed: boolean;
@@ -111,11 +114,27 @@ export class EventLedger {
     return Array.from(this.events.values());
   }
 
-  /** Bind a market to an event. Called at create_market time. */
-  attachMarket(handleId: string, marketIdHex: string): void {
+  /** Bind a market to an event. Called at create_market time. Optional
+   *  `label` lets the operator (or stream-monitor agent) attach a human
+   *  description that the UI surfaces on the market card. */
+  attachMarket(handleId: string, marketIdHex: string, label?: string): void {
     const ev = this.events.get(handleId);
     if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
     if (!ev.marketIds.includes(marketIdHex)) ev.marketIds.push(marketIdHex);
+    if (label) {
+      ev.marketLabels = { ...(ev.marketLabels ?? {}), [marketIdHex]: label };
+    }
+    this.persist();
+  }
+
+  /** Clear all market bindings for an event. Used when the operator wants
+   *  to swap the market set under an existing event (e.g., demo reset)
+   *  without losing the EventHandle's graduation/volume history. */
+  detachAllMarkets(handleId: string): void {
+    const ev = this.events.get(handleId);
+    if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
+    ev.marketIds = [];
+    ev.marketLabels = {};
     this.persist();
   }
 

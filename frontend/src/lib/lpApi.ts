@@ -45,11 +45,35 @@ export interface EventDescriptor {
   /** Hex conditionIds (lowercase, no 0x) of markets bound under this event.
    *  Optional because pre-marketIds entries from older relayer deploys lack it. */
   marketIds?: string[];
+  /** Human-readable label per attached market, keyed by marketId hex. */
+  marketLabels?: Record<string, string>;
+}
+
+export interface PredacyMarketMeta {
+  marketId: string;
+  label: string | null;
+  eventHandleId: string;
+  eventLabel: string | null;
+  eventCategory: EventCategory;
+  eventClosesAt: number;
+  feeBpsTaker: number;
+  feeBpsRebates: number;
+  graduated: boolean;
 }
 
 export async function getEvent(handleIdHex: string): Promise<EventDescriptor | null> {
   const events = await listEvents();
   return events.find((e) => e.handleId.toLowerCase() === handleIdHex.toLowerCase()) ?? null;
+}
+
+export async function getPredacyMarket(marketIdHex: string): Promise<PredacyMarketMeta | null> {
+  try {
+    return await relayerJson<PredacyMarketMeta>(
+      `/market/${marketIdHex.replace(/^0x/, "")}`,
+    );
+  } catch {
+    return null;
+  }
 }
 
 export interface LPPosition {

@@ -10,8 +10,6 @@ import {
   getEvent,
   relativeTime,
 } from "@/lib/lpApi";
-import { getMarket, type Market } from "@/lib/polymarket";
-import { fmtPct, fmtCents, outcomeLabel } from "@/lib/marketUtils";
 
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
@@ -23,26 +21,12 @@ interface Props {
 export default function PredacyEventDetail({ params }: Props) {
   const { handleId } = use(params);
   const [event, setEvent] = useState<EventDescriptor | null | undefined>(undefined);
-  const [markets, setMarkets] = useState<Map<string, Market | null>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       const ev = await getEvent(handleId).catch(() => null);
-      if (cancelled) return;
-      setEvent(ev);
-      if (!ev?.marketIds?.length) return;
-      // Hydrate each attached market via the existing /api/markets proxy.
-      // We hex-prefix conditionIds because the relayer stores them stripped.
-      const entries = await Promise.all(
-        ev.marketIds.map(async (id) => {
-          const cid = id.startsWith("0x") ? id : `0x${id}`;
-          const m = await getMarket(cid).catch(() => null);
-          return [id, m] as const;
-        }),
-      );
-      if (cancelled) return;
-      setMarkets(new Map(entries));
+      if (!cancelled) setEvent(ev);
     }
     load();
     return () => { cancelled = true; };
@@ -121,10 +105,13 @@ export default function PredacyEventDetail({ params }: Props) {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {event.marketIds.map((id) => {
-                const m = markets.get(id);
-                return <MarketCard key={id} marketId={id} market={m ?? null} />;
-              })}
+              {event.marketIds.map((id) => (
+                <MarketCard
+                  key={id}
+                  marketId={id}
+                  label={event.marketLabels?.[id]}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -256,55 +243,37 @@ function ParamRow({
   );
 }
 
-function MarketCard({ marketId, market }: { marketId: string; market: Market | null }) {
-  // The /market/[id] route resolves by conditionId; we hex-prefix because
-  // the relayer stores conditionIds stripped of 0x for compactness.
-  const cid = marketId.startsWith("0x") ? marketId : `0x${marketId}`;
-
-  if (!market) {
-    return (
-      <div className="border border-card-border bg-card p-4 space-y-2 animate-pulse">
-        <div className="h-3 w-2/3 bg-border" />
-        <div className="h-3 w-1/3 bg-border/60" />
-        <div className="h-6 w-1/2 bg-border" />
-      </div>
-    );
-  }
-
-  const yesPrice = parseFloat(market.outcomePrices?.[0] ?? "0");
-  const noRaw    = parseFloat(market.outcomePrices?.[1] ?? "0");
-  const noDisplay = noRaw >= 0.999 ? (1 - noRaw) : noRaw;
-  const probColor = yesPrice > 0.6 ? "#2CE8C6" : yesPrice < 0.4 ? "#FF5F6D" : "#4EA3FF";
+function MarketCard({ marketId, label }: { marketId: string; label?: string }) {
+  // Predacy-native markets default to a 50/50 prior — the actual price
+  // emerges from the first sealed-bid batch, not from a Polymarket lookup.
+  const display = label ?? `Market ${marketId.slice(0, 8)}…`;
 
   return (
-    <Link href={`/market/${cid}`} className="block">
+    <Link href={`/market/predacy/${marketId}`} className="block">
       <div className="border border-card-border bg-card p-4 hover:border-border-bright transition-colors flex flex-col gap-3 cursor-crosshair h-full">
         <h3 className="text-[13px] text-text leading-snug line-clamp-3">
-          {market.question}
+          {display}
         </h3>
         <div className="flex items-end justify-between gap-3">
           <div className="flex items-baseline gap-1">
             <span
               className="text-2xl font-black tabular-nums leading-none"
-              style={{ fontFamily: "var(--font-display)", color: probColor }}
+              style={{ fontFamily: "var(--font-display)", color: "#4EA3FF" }}
             >
-              {fmtPct(yesPrice)}
+              50%
             </span>
-            <span className="text-[9px] text-muted tracking-widest uppercase">{outcomeLabel(market)}</span>
+            <span className="text-[9px] text-muted tracking-widest uppercase">implied</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}>YES {fmtCents(yesPrice)}</span>
-            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}>NO {fmtCents(noDisplay)}</span>
+            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}>YES 50¢</span>
+            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}>NO 50¢</span>
           </div>
         </div>
         <div className="h-[2px] bg-border rounded-full overflow-hidden">
-          <div
-            className="h-full transition-all duration-500"
-            style={{ width: `${Math.max(Math.round(yesPrice * 100), 1)}%`, background: probColor }}
-          />
+          <div className="h-full transition-all duration-500" style={{ width: "50%", background: "#4EA3FF" }} />
         </div>
         <div className="text-[10px] text-muted-dim tracking-widest uppercase">
-          Trade →
+          Place sealed bid →
         </div>
       </div>
     </Link>

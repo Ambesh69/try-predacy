@@ -1175,6 +1175,7 @@ app.get("/events", (_req, res) => {
     cumulativeVolumeUsdc: ev.cumulativeVolumeUsdc.toString(),
     marketCount: ev.marketIds.length,
     marketIds: ev.marketIds,
+    marketLabels: ev.marketLabels ?? {},
     feeBpsTaker: ev.feeBpsTaker,
     feeBpsTreasury: ev.feeBpsTreasury,
     feeBpsRebates: ev.feeBpsRebates,
@@ -1192,7 +1193,7 @@ app.get("/events", (_req, res) => {
 app.post("/events/:handleIdHex/markets", async (req, res) => {
   try {
     const handleIdHex = req.params.handleIdHex;
-    const { marketId: marketIdHex } = req.body || {};
+    const { marketId: marketIdHex, label } = req.body || {};
     if (!marketIdHex) return res.status(400).json({ error: "marketId required" });
 
     const ev = eventLedger.get(handleIdHex);
@@ -1210,12 +1211,58 @@ app.post("/events/:handleIdHex/markets", async (req, res) => {
       console.warn(`[POST /events/.../markets] initBootstrapPool warning: ${err.message}`);
     }
 
-    eventLedger.attachMarket(handleIdHex, marketIdHex.toLowerCase().replace("0x", ""));
+    eventLedger.attachMarket(handleIdHex, marketIdHex.toLowerCase().replace("0x", ""), label);
     res.json({ ok: true, bootstrapTxSig, marketCount: eventLedger.get(handleIdHex)!.marketIds.length });
   } catch (err: any) {
     console.error("[POST /events/.../markets] Error:", err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * DELETE /events/:handleIdHex/markets
+ * Clear all market bindings under an event. Used to swap the market set
+ * (e.g., reset demo data) without disturbing the on-chain EventHandle or
+ * its accumulated graduation/volume state.
+ */
+app.delete("/events/:handleIdHex/markets", (req, res) => {
+  try {
+    const handleIdHex = req.params.handleIdHex;
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not found in ledger" });
+    const before = ev.marketIds.length;
+    eventLedger.detachAllMarkets(handleIdHex);
+    res.json({ ok: true, detached: before });
+  } catch (err: any) {
+    console.error("[DELETE /events/.../markets] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /market/:marketIdHex
+ * Return metadata for a Predacy-native market — handle id of the parent
+ * event, its label, and the market's own label (if attached with one).
+ * The trading UI uses this to render the market detail page without
+ * relying on Polymarket data.
+ */
+app.get("/market/:marketIdHex", (req, res) => {
+  const marketIdHex = req.params.marketIdHex.toLowerCase().replace("0x", "");
+  for (const ev of eventLedger.list()) {
+    if (!ev.marketIds.includes(marketIdHex)) continue;
+    return res.json({
+      marketId: marketIdHex,
+      label: ev.marketLabels?.[marketIdHex] ?? null,
+      eventHandleId: ev.handleId,
+      eventLabel: ev.label ?? null,
+      eventCategory: ev.category,
+      eventClosesAt: ev.closesAt,
+      feeBpsTaker: ev.feeBpsTaker,
+      feeBpsRebates: ev.feeBpsRebates,
+      graduated: ev.graduated,
+    });
+  }
+  return res.status(404).json({ error: "market not found in any event" });
 });
 
 /**
