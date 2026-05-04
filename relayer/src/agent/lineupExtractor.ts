@@ -54,8 +54,22 @@ export interface Lineup {
   hash: string;
 }
 
+// Backoff windows for repeated extract failures. Two regimes:
+//   - "transient" (network blip, ffmpeg flake) — 90s backoff
+//   - "persistent" (HTTP 401/403/429/quota) — 15min backoff so we don't
+//     hammer OpenAI with rejected calls when billing is misconfigured
+const TRANSIENT_BACKOFF_MS = 90_000;
+const PERSISTENT_BACKOFF_MS = 15 * 60_000;
+
+interface FailureRecord {
+  failedAt: number;
+  reason: "transient" | "persistent";
+  message: string;
+}
+
 export class LineupExtractor {
   private apiKey: string;
+  private recentFailures: Map<string, FailureRecord> = new Map();
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
@@ -67,11 +81,27 @@ export class LineupExtractor {
 
   /** Run the full pipeline: pull a frame, OCR it, return Lineup. Returns
    *  null on hard failure (network down, video private, etc) — caller
-   *  should retry on next tick rather than crash. */
+   *  should retry on next tick rather than crash.
+   *
+   *  Honors a per-videoId backoff so we don't hammer OpenAI with the
+   *  same failing request every poll. Backoff is longer for billing/auth
+   *  failures than for transient network blips. */
   async extract(videoId: string): Promise<Lineup | null> {
     if (!this.enabled) {
       console.warn("[LineupExtractor] OPENAI_API_KEY not set — extractor disabled");
       return null;
+    }
+
+    const last = this.recentFailures.get(videoId);
+    if (last) {
+      const window = last.reason === "persistent" ? PERSISTENT_BACKOFF_MS : TRANSIENT_BACKOFF_MS;
+      const elapsed = Date.now() - last.failedAt;
+      if (elapsed < window) {
+        // Quietly skip — caller already saw the original error logged.
+        return null;
+      }
+      // Backoff window elapsed; give it another shot.
+      this.recentFailures.delete(videoId);
     }
 
     let framePath: string | null = null;
@@ -80,7 +110,12 @@ export class LineupExtractor {
       const lineup = await this.ocrFrame(framePath);
       return lineup;
     } catch (err: any) {
-      console.error(`[LineupExtractor] extract(${videoId}) failed: ${err.message}`);
+      const msg = String(err?.message || "");
+      const persistent = /\b(401|403|429|insufficient_quota|invalid_api_key)\b/i.test(msg);
+      const reason: FailureRecord["reason"] = persistent ? "persistent" : "transient";
+      this.recentFailures.set(videoId, { failedAt: Date.now(), reason, message: msg });
+      const minutes = (persistent ? PERSISTENT_BACKOFF_MS : TRANSIENT_BACKOFF_MS) / 60_000;
+      console.error(`[LineupExtractor] extract(${videoId}) failed (${reason}, retrying in ${minutes}m): ${msg.slice(0, 200)}`);
       return null;
     } finally {
       if (framePath) {
