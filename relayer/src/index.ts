@@ -1219,6 +1219,38 @@ const streamMonitor = new StreamMonitor({
 streamMonitor.start();
 
 /**
+ * POST /agent/extract?videoId=X
+ * Debug endpoint — runs the lineup extractor against an arbitrary
+ * YouTube videoId and returns what GPT-4o saw. Doesn't touch the
+ * ledger or the active-session map. Useful for tuning the prompt and
+ * sampling parameters without burning a poll cycle.
+ *
+ * Optional query params:
+ *   numFrames    (default 4)  — how many frames to sample
+ *   intervalSec  (default 12) — gap between frames in seconds
+ */
+import { LineupExtractor } from "./agent/lineupExtractor";
+const debugExtractor = new LineupExtractor(process.env.OPENAI_API_KEY ?? "");
+app.post("/agent/extract", async (req, res) => {
+  try {
+    const videoId = (req.query.videoId as string) || (req.body?.videoId as string);
+    if (!videoId) return res.status(400).json({ error: "videoId required" });
+    const numFrames = req.query.numFrames ? Number(req.query.numFrames) : undefined;
+    const intervalSec = req.query.intervalSec ? Number(req.query.intervalSec) : undefined;
+    const t0 = Date.now();
+    const result = await debugExtractor.extract(videoId, { numFrames, intervalSec });
+    res.json({
+      ok: !!result,
+      elapsedMs: Date.now() - t0,
+      result,
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/extract] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /events
  * Operator-only — create a new EventHandle on-chain + register in ledger.
  * body: { label, category, closesAt, graduationThresholdUsdc?, graduationBatches?, feeBpsTaker?, feeBpsTreasury?, feeBpsRebates?, bootstrapSeedUsdc? }
