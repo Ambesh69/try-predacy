@@ -1409,6 +1409,31 @@ app.post("/agent/start-session", async (req, res) => {
 });
 
 /**
+ * GET /agent/sessions
+ * Lists every session the StreamMonitor has in its in-memory active map.
+ * Useful for debugging when the EventLedger shows an event but the
+ * monitor has dropped it from active (post-redeploy, post-grace period,
+ * etc) — the refresh endpoint only operates on active sessions.
+ */
+app.get("/agent/sessions", (_req, res) => {
+  const active = streamMonitor.listActive();
+  res.json({
+    count: active.length,
+    sessions: active.map((s) => ({
+      sessionLabel: s.sessionLabel,
+      channelTag: s.channelTag,
+      videoId: s.videoId,
+      handleIdHex: s.handleIdHex,
+      lineupHash: s.lineupHash,
+      lineup: s.lineup.map((p) => p.name),
+      startedAt: s.startedAt,
+      lastSeenAt: s.lastSeenAt,
+      lastLineupCheckAt: s.lastLineupCheckAt,
+    })),
+  });
+});
+
+/**
  * POST /agent/sessions/:identifier/refresh
  * Force a lineup re-extraction on an active session right now,
  * bypassing both the 10-min recheck interval and the per-videoId
@@ -1424,8 +1449,15 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
   try {
     const identifier = req.params.identifier;
     if (!identifier) return res.status(400).json({ error: "identifier required" });
+    // Optional videoId override — required when the session is no longer
+    // in the monitor's active map (e.g. cleared on redeploy) but the
+    // EventHandle still lives in the EventLedger and the operator wants
+    // to additively re-extract under it without losing the on-chain
+    // state. Pass via ?videoId=… (or body.videoId for tools that POST
+    // JSON).
+    const videoId = (req.query.videoId as string) || (req.body?.videoId as string) || undefined;
     const t0 = Date.now();
-    const result = await streamMonitor.forceRefresh(identifier);
+    const result = await streamMonitor.forceRefresh(identifier, videoId);
     res.json({
       ok: true,
       elapsedMs: Date.now() - t0,
@@ -1433,7 +1465,9 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[POST /agent/sessions/:identifier/refresh] Error:", err.message);
-    const status = err.message?.includes("no active session") ? 404 : 500;
+    const status = err.message?.includes("no active session") || err.message?.includes("no EventHandle")
+      ? 404
+      : 500;
     res.status(status).json({ error: err.message });
   }
 });

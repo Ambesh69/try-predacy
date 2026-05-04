@@ -257,35 +257,91 @@ export class StreamMonitor {
     return Object.values(this.state.active);
   }
 
-  /** Force a re-extraction on an active session right now, bypassing the
-   *  10-min recheck interval AND the per-videoId failure backoff. Behaves
-   *  like the periodic recheck for the additive-entrants path, but is
-   *  triggered on demand — used by the admin refresh endpoint when the
-   *  operator notices a session was started with an incomplete lineup
-   *  (e.g. heads-up moment captured at session start). Preserves the
-   *  EventHandle and existing markets; just adds per-player markets for
-   *  any newly-seen players.
+  /** Force a re-extraction right now, bypassing the 10-min recheck
+   *  interval AND the per-videoId failure backoff. Additive: any newly-
+   *  seen players get per-player markets seeded under the existing
+   *  EventHandle. Existing markets stay untouched.
    *
-   *  `identifier` accepts either the lineup hash (session key) or the
-   *  EventHandle hex — operator-friendly, since the UI surfaces the
-   *  handleId on the event card.
+   *  Two paths:
+   *
+   *  1) Active session known to the StreamMonitor — pass just the
+   *     `identifier` (lineup hash or handle hex). videoId is read off
+   *     the active session.
+   *
+   *  2) Active session lost (e.g. monitor restarted with empty
+   *     `agent-sessions.json` after redeploy) but the EventHandle still
+   *     lives in the EventLedger — pass `identifier` (handle hex) AND a
+   *     `videoId` override. The prior lineup is reconstructed from the
+   *     ledger's stored marketLabels (we strip the "Will <NAME> bluff…"
+   *     prefix to recover names). The session is also reseeded into
+   *     active so future polls recheck it.
    *
    *  Returns a structured result so callers can show the operator what
    *  changed without having to diff state separately. */
-  async forceRefresh(identifier: string): Promise<{
+  async forceRefresh(
+    identifier: string,
+    overrideVideoId?: string,
+  ): Promise<{
     sessionLabel: string;
     handleIdHex: string;
     videoId: string;
     capturedPlayers: string[];
     entrantsSeeded: string[];
     lineupSize: number;
+    /** True when we had to rebuild the active session from the ledger
+     *  (path 2 above). Lets the caller flag a degraded/recovered state. */
+    reconstructed: boolean;
   }> {
     const idLower = identifier.toLowerCase();
-    const session = Object.values(this.state.active).find(
+    let session = Object.values(this.state.active).find(
       (s) => s.lineupHash === idLower || s.handleIdHex.toLowerCase() === idLower,
     );
+    let reconstructed = false;
+
     if (!session) {
-      throw new Error(`forceRefresh: no active session for ${identifier}`);
+      // Path 2: try to rehydrate from the EventLedger. Caller must give
+      // us a videoId since the ledger doesn't know about YouTube state.
+      if (!overrideVideoId) {
+        throw new Error(
+          `forceRefresh: no active session for ${identifier}; pass ?videoId=… to rehydrate from ledger`,
+        );
+      }
+      const ev = this.ledger.get(idLower);
+      if (!ev) {
+        throw new Error(`forceRefresh: no EventHandle in ledger for ${identifier}`);
+      }
+      const channelTag: ChannelTag = (ev.label?.startsWith("HCL") ? "HCL" : "TRITON");
+      const channel = this.channels.find((c) => c.tag === channelTag);
+      const priorPlayers = playersFromMarketLabels(ev.marketLabels);
+      const prior: Player[] = priorPlayers.map((name, i) => ({ seat: i + 1, name }));
+      const now = Math.floor(Date.now() / 1000);
+      session = {
+        sessionLabel: ev.label ?? `event-${idLower.slice(0, 8)}`,
+        channelTag,
+        channelId: channel?.channelId ?? "",
+        channelName: channel?.name ?? channelTag,
+        videoId: overrideVideoId,
+        videoTitle: "",
+        handleIdHex: ev.handleId,
+        lineup: prior,
+        lineupHash: lineupHash(prior),
+        startedAt: ev.registeredAt,
+        lastSeenAt: now,
+        lastLineupCheckAt: now,
+      };
+      this.state.active[session.lineupHash] = session;
+      reconstructed = true;
+      this.startGameStateLoop(session);
+      console.log(
+        `[StreamMonitor] forceRefresh: rehydrated ${session.sessionLabel} from ledger (${prior.length} prior players, video ${overrideVideoId})`,
+      );
+    } else if (overrideVideoId && overrideVideoId !== session.videoId) {
+      // Active session exists but caller wants to point it at a different
+      // videoId (broadcast restarted on a new id). Update + carry on.
+      console.log(
+        `[StreamMonitor] forceRefresh: ${session.sessionLabel} videoId ${session.videoId} → ${overrideVideoId}`,
+      );
+      session.videoId = overrideVideoId;
     }
 
     // Drop any cached failure for this videoId so a recent transient
@@ -310,7 +366,6 @@ export class StreamMonitor {
           await this.safeSeed(session.handleIdHex, m);
         }
       }
-      // Grow the session's lineup with the new entrants.
       session.lineup = [...session.lineup, ...entrants];
       session.lineupHash = lineupHash(session.lineup);
       session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
@@ -330,6 +385,7 @@ export class StreamMonitor {
       capturedPlayers: lineup.players.map((p) => p.name),
       entrantsSeeded: entrants.map((p) => p.name),
       lineupSize: session.lineup.length,
+      reconstructed,
     };
   }
 
@@ -642,4 +698,28 @@ export class StreamMonitor {
       console.error("[StreamMonitor] State persist failed:", err);
     }
   }
+}
+
+/** Recover the player lineup from a stored event's marketLabels by
+ *  stripping the "Will <NAME> bluff…" / "Will <NAME> bust…" prefixes.
+ *  Mirrors the frontend's parser in PredacyEventCard so reconstructed
+ *  lineups match what users see on the cards. Returns lowercase names
+ *  in first-seen order (de-duped). */
+function playersFromMarketLabels(labels?: Record<string, string>): string[] {
+  if (!labels) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const lbl of Object.values(labels)) {
+    let m = lbl.match(/^Will (.+?) bluff the most this session\?$/);
+    if (!m) m = lbl.match(/^Will (.+?) bust first\?$/);
+    if (!m) m = lbl.match(/^Will (.+?) win the biggest pot tonight\?$/);
+    if (!m) m = lbl.match(/^Will (.+?) win the most hands tonight\?$/);
+    if (!m) continue;
+    const name = m[1].trim();
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
 }
