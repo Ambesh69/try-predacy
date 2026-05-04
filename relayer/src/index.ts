@@ -1299,6 +1299,43 @@ app.post("/agent/snapshot", async (req, res) => {
 });
 
 /**
+ * POST /agent/manual-tick?handleId=…&videoId=…
+ * Debug endpoint — captures one game-state snapshot AND records it
+ * into SessionStats under the given EventHandle. Lets us populate
+ * the live-standings panel for an existing event without waiting on
+ * the YouTube poll loop.
+ *
+ * Repeated calls accumulate (sessionStats edge-detection still
+ * dedupes hand-strength flags / all-ins, so it's safe to spam).
+ */
+app.post("/agent/manual-tick", async (req, res) => {
+  try {
+    const handleId = (req.query.handleId as string) || "";
+    const videoId = (req.query.videoId as string) || "";
+    if (!handleId || !videoId) {
+      return res.status(400).json({ error: "handleId + videoId required" });
+    }
+    const ev = eventLedger.get(handleId);
+    if (!ev) return res.status(404).json({ error: "EventHandle not in ledger" });
+    const t0 = Date.now();
+    const snap = await debugGameState.snapshot(videoId);
+    if (!snap) return res.status(502).json({ error: "snapshot failed", elapsedMs: Date.now() - t0 });
+    const sessionLabel = ev.label ?? `event-${handleId.slice(0, 8)}`;
+    sessionStats.recordSnapshot(sessionLabel, handleId, snap);
+    const stats = sessionStats.get(sessionLabel);
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - t0,
+      snapshot: snap,
+      stats,
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/manual-tick] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /events
  * Operator-only — create a new EventHandle on-chain + register in ledger.
  * body: { label, category, closesAt, graduationThresholdUsdc?, graduationBatches?, feeBpsTaker?, feeBpsTreasury?, feeBpsRebates?, bootstrapSeedUsdc? }
@@ -1362,6 +1399,30 @@ app.post("/events/:handleIdHex/markets", async (req, res) => {
     res.json({ ok: true, marketCount: eventLedger.get(handleIdHex)!.marketIds.length });
   } catch (err: any) {
     console.error("[POST /events/.../markets] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /events/:handleIdHex
+ * Drop an event from the off-chain ledger so it stops showing up in
+ * /events lists and the EVENTS tab on the homepage. The on-chain
+ * EventHandle PDA is left in place — it's immutable rent-funded
+ * state, not worth a close-account flow for the demo. Operators can
+ * re-register the event later (idempotent on handleId).
+ *
+ * Mostly used to nuke dev-iteration garbage (failed seeds, v1-v2
+ * label drift) without redeploying the volume.
+ */
+app.delete("/events/:handleIdHex", (req, res) => {
+  try {
+    const handleIdHex = req.params.handleIdHex;
+    const ev = eventLedger.get(handleIdHex);
+    if (!ev) return res.status(404).json({ error: "EventHandle not in ledger" });
+    eventLedger.remove(handleIdHex);
+    res.json({ ok: true, removed: handleIdHex });
+  } catch (err: any) {
+    console.error("[DELETE /events/:handleIdHex] Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

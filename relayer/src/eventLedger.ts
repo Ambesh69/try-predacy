@@ -154,6 +154,17 @@ export class EventLedger {
     this.persist();
   }
 
+  /** Drop an event from the off-chain ledger. The on-chain EventHandle
+   *  PDA is unaffected — it stays rent-funded and could be re-registered
+   *  later via register() (idempotent on handleId). Use to nuke stale
+   *  demo data. */
+  remove(handleId: string): boolean {
+    if (!this.events.has(handleId)) return false;
+    this.events.delete(handleId);
+    this.persist();
+    return true;
+  }
+
   /**
    * Find the event handle a given market belongs to. Linear scan — fine
    * for v1 with O(few hundred) events; index by marketId in v2 if needed.
