@@ -109,15 +109,7 @@ export default function PredacyEventDetail({ params }: Props) {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {event.marketIds.map((id) => (
-                <MarketCard
-                  key={id}
-                  marketId={id}
-                  label={event.marketLabels?.[id]}
-                />
-              ))}
-            </div>
+            <MarketsGrid event={event} />
           )}
         </div>
 
@@ -244,6 +236,209 @@ function ParamRow({
       <p className="text-[9px] tracking-widest uppercase text-muted">{label}</p>
       <p className={clsx("text-text mt-0.5", monospace && "font-mono")}>{value}</p>
       {hint && <p className="text-[9px] text-muted-dim mt-0.5 leading-snug">{hint}</p>}
+    </div>
+  );
+}
+
+/* ── Multi-outcome grouping ──────────────────────────────────────────
+ *
+ *  The agent seeds 4 templates per player ("Will <X> bluff the most this
+ *  session?", etc.). Rendered as N separate binary cards that read like
+ *  spam. Group by template instead — one card titled "Who bluffs the
+ *  most this session?" with each player as an outcome, à la Polymarket
+ *  multi-outcome markets.
+ *
+ *  Implementation note: each underlying on-chain market is still a
+ *  binary YES/NO market (one per player). The grouping is purely a UI
+ *  presentation. Clicking an outcome takes you to that player's
+ *  binary market for sealed-bid YES placement — buying YES on
+ *  player X means betting "X wins this template".
+ *
+ *  H2H and generic markets stay as their own binary cards (already
+ *  pairwise / single-outcome by design). */
+
+interface MarketEntry {
+  marketId: string;
+  label: string;
+}
+
+interface MultiOutcomeGroup {
+  kind: "multi";
+  templateKey: "bluff_most" | "bust_first" | "biggest_pot" | "most_hands";
+  title: string;
+  outcomes: { marketId: string; player: string }[];
+}
+
+interface BinaryGroup {
+  kind: "binary";
+  market: MarketEntry;
+}
+
+type Group = MultiOutcomeGroup | BinaryGroup;
+
+const TEMPLATE_TITLES: Record<MultiOutcomeGroup["templateKey"], string> = {
+  bluff_most: "Who bluffs the most this session?",
+  bust_first: "Who busts first?",
+  biggest_pot: "Who wins the biggest pot tonight?",
+  most_hands: "Who wins the most hands tonight?",
+};
+
+const TEMPLATE_PATTERNS: { key: MultiOutcomeGroup["templateKey"]; rx: RegExp }[] = [
+  { key: "bluff_most",  rx: /^Will (.+?) bluff the most this session\?$/ },
+  { key: "bust_first",  rx: /^Will (.+?) bust first\?$/ },
+  { key: "biggest_pot", rx: /^Will (.+?) win the biggest pot tonight\?$/ },
+  { key: "most_hands",  rx: /^Will (.+?) win the most hands tonight\?$/ },
+];
+
+function groupMarkets(event: EventDescriptor): Group[] {
+  const labels = event.marketLabels ?? {};
+  const ids = event.marketIds ?? [];
+  const buckets = new Map<MultiOutcomeGroup["templateKey"], MultiOutcomeGroup["outcomes"]>();
+  const binary: BinaryGroup[] = [];
+
+  for (const id of ids) {
+    const label = labels[id];
+    if (!label) {
+      binary.push({ kind: "binary", market: { marketId: id, label: `Market ${id.slice(0, 8)}…` } });
+      continue;
+    }
+    let matched = false;
+    for (const { key, rx } of TEMPLATE_PATTERNS) {
+      const m = label.match(rx);
+      if (!m) continue;
+      const player = m[1].trim();
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push({ marketId: id, player });
+      matched = true;
+      break;
+    }
+    if (!matched) {
+      binary.push({ kind: "binary", market: { marketId: id, label } });
+    }
+  }
+
+  // Order: multi-outcome groups in template-priority order, then binaries.
+  const out: Group[] = [];
+  const order: MultiOutcomeGroup["templateKey"][] = ["most_hands", "biggest_pot", "bluff_most", "bust_first"];
+  for (const key of order) {
+    const outcomes = buckets.get(key);
+    if (!outcomes || outcomes.length < 2) {
+      // Don't promote a 1-outcome group — fall back to a binary card so
+      // we don't render an awkward "1-outcome multi" card.
+      if (outcomes && outcomes.length === 1) {
+        const o = outcomes[0];
+        binary.push({
+          kind: "binary",
+          market: {
+            marketId: o.marketId,
+            label: labels[o.marketId] ?? TEMPLATE_TITLES[key],
+          },
+        });
+      }
+      continue;
+    }
+    out.push({
+      kind: "multi",
+      templateKey: key,
+      title: TEMPLATE_TITLES[key],
+      // Sort outcomes alphabetically for now — once price data is
+      // available, sort descending by implied probability so the
+      // favourite leads the list.
+      outcomes: [...outcomes].sort((a, b) => a.player.localeCompare(b.player)),
+    });
+  }
+  return [...out, ...binary];
+}
+
+function MarketsGrid({ event }: { event: EventDescriptor }) {
+  const groups = groupMarkets(event);
+  // Multi-outcome groups render full-width; binary cards cluster into
+  // a 2-col grid below them. Prevents binaries from each taking a full
+  // row when sandwiched between multis.
+  const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
+  const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
+  return (
+    <div className="space-y-3">
+      {multis.map((g) => (
+        <MultiOutcomeMarket key={`m-${g.templateKey}`} group={g} />
+      ))}
+      {binaries.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {binaries.map(({ market }) => (
+            <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MultiOutcomeMarket({ group }: { group: MultiOutcomeGroup }) {
+  const n = group.outcomes.length;
+  // Predacy-native markets default to 50/50 priors — actual prices
+  // emerge from the first sealed-bid batch. We display a uniform prior
+  // (1/N) across outcomes so the card reads as a true multi-outcome
+  // market until live price data lands.
+  const uniformPct = Math.round(100 / n);
+
+  return (
+    <div className="border border-card-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-card-border flex items-center justify-between gap-3">
+        <h3 className="text-[14px] text-text leading-snug font-bold">{group.title}</h3>
+        <span className="text-[10px] text-muted-dim tracking-widest uppercase shrink-0">
+          {n} outcomes
+        </span>
+      </div>
+      <div>
+        {group.outcomes.map(({ marketId, player }, idx) => (
+          <Link
+            key={marketId}
+            href={`/market/predacy/${marketId}`}
+            className={clsx(
+              "flex items-center gap-3 px-4 py-3 hover:bg-card-elevated transition-colors group cursor-crosshair",
+              idx > 0 && "border-t border-card-border",
+            )}
+          >
+            <span className="text-[10px] text-muted-dim tabular-nums w-5 shrink-0">
+              {idx + 1}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-[13px] text-text font-mono truncate">{player}</p>
+              <p className="text-[10px] text-muted-dim">
+                Bet YES = "{player} wins"
+              </p>
+            </div>
+            <div className="hidden sm:block w-[120px] h-[2px] bg-border rounded-full shrink-0">
+              <div
+                className="h-full transition-all duration-500"
+                style={{ width: `${uniformPct}%`, background: "#4EA3FF" }}
+              />
+            </div>
+            <div className="flex items-baseline gap-1 shrink-0">
+              <span className="text-[14px] tabular-nums font-black" style={{ color: "#4EA3FF" }}>
+                {uniformPct}%
+              </span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <span
+                className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
+                style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}
+              >
+                YES {Math.round(100 / n)}¢
+              </span>
+              <span
+                className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
+                style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}
+              >
+                NO {100 - Math.round(100 / n)}¢
+              </span>
+            </div>
+            <span className="text-accent text-[12px] hidden md:inline shrink-0 group-hover:translate-x-0.5 transition-transform">
+              →
+            </span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
