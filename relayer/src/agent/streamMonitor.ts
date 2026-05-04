@@ -281,16 +281,24 @@ export class StreamMonitor {
   async forceRefresh(
     identifier: string,
     overrideVideoId?: string,
+    mode: "additive" | "reseed" | "replace" = "additive",
   ): Promise<{
     sessionLabel: string;
     handleIdHex: string;
     videoId: string;
     capturedPlayers: string[];
     entrantsSeeded: string[];
+    /** Set in `reseed` mode — every captured player gets idempotently
+     *  reseeded, so this lists everyone whose markets were touched. */
+    reseededPlayers?: string[];
+    /** Set in `replace` mode — marketIds dropped from the ledger because
+     *  they referenced ghost players no longer at the table. */
+    droppedMarketIds?: string[];
     lineupSize: number;
     /** True when we had to rebuild the active session from the ledger
      *  (path 2 above). Lets the caller flag a degraded/recovered state. */
     reconstructed: boolean;
+    mode: "additive" | "reseed" | "replace";
   }> {
     const idLower = identifier.toLowerCase();
     let session = Object.values(this.state.active).find(
@@ -365,27 +373,92 @@ export class StreamMonitor {
     const oldKeys = new Set(session.lineup.map((p) => canonicalize(p.name)));
     const entrants = lineup.players.filter((p) => !oldKeys.has(canonicalize(p.name)));
 
-    if (entrants.length > 0) {
+    let reseededPlayers: string[] | undefined;
+    let droppedMarketIds: string[] | undefined;
+
+    if (mode === "reseed") {
+      // Idempotently re-run newEntrantMarketsFor for every captured
+      // player — covers cases where the recheckLineup detected entrants
+      // but their seedMarketUnderEvent calls failed silently (e.g.
+      // under WSS-cap pressure before today's HTTP-poll fix). The
+      // safeSeed path is already idempotent on already-attached
+      // markets, so re-running on existing players is a no-op.
       console.log(
-        `[StreamMonitor] forceRefresh ${session.sessionLabel}: ${entrants.length} new player(s): ${entrants.map((p) => p.name).join(", ")}`,
+        `[StreamMonitor] forceRefresh(reseed) ${session.sessionLabel}: idempotently seeding ${lineup.players.length} captured player(s)`,
       );
-      for (const p of entrants) {
+      for (const p of lineup.players) {
         const markets = newEntrantMarketsFor(session.sessionLabel, p);
         for (const m of markets) {
           await this.safeSeed(session.handleIdHex, m);
         }
       }
-      session.lineup = [...session.lineup, ...entrants];
+      reseededPlayers = lineup.players.map((p) => p.name);
+      // Fold in any genuine entrants too so session.lineup grows.
+      if (entrants.length > 0) {
+        session.lineup = [...session.lineup, ...entrants];
+        session.lineupHash = lineupHash(session.lineup);
+      }
+    } else if (mode === "replace") {
+      // Drop ghost players (anyone in the prior lineup but NOT in this
+      // capture). Their per-player markets get detached from the event
+      // ledger so the UI stops surfacing them, but the on-chain accounts
+      // stay rent-funded (can't cheaply close Solana accounts).
+      const ev = this.ledger.get(session.handleIdHex);
+      if (!ev) throw new Error(`forceRefresh(replace): EventHandle ${session.handleIdHex} missing`);
+      const keepKeys = new Set(lineup.players.map((p) => canonicalize(p.name)));
+      const ghostKeys = new Set<string>();
+      for (const p of session.lineup) {
+        const k = canonicalize(p.name);
+        if (!keepKeys.has(k)) ghostKeys.add(k);
+      }
+      const toDrop: string[] = [];
+      for (const [marketId, label] of Object.entries(ev.marketLabels ?? {})) {
+        const refs = playerNamesReferencedByLabel(label);
+        if (refs.length === 0) continue; // generic market — keep
+        const anyGhost = refs.some((r) => ghostKeys.has(canonicalize(r)));
+        if (anyGhost) toDrop.push(marketId);
+      }
+      if (toDrop.length > 0) {
+        const { dropped } = this.ledger.detachMarkets(session.handleIdHex, toDrop);
+        console.log(
+          `[StreamMonitor] forceRefresh(replace) ${session.sessionLabel}: dropped ${dropped} ghost-player market(s)`,
+        );
+      }
+      droppedMarketIds = toDrop;
+      // Now seed any captured players whose markets aren't already
+      // present (idempotent — safeSeed tolerates already-exists).
+      for (const p of lineup.players) {
+        const markets = newEntrantMarketsFor(session.sessionLabel, p);
+        for (const m of markets) {
+          await this.safeSeed(session.handleIdHex, m);
+        }
+      }
+      // Replace session.lineup outright with the fresh capture.
+      session.lineup = [...lineup.players];
       session.lineupHash = lineupHash(session.lineup);
-      session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
-      this.persist();
     } else {
-      console.log(
-        `[StreamMonitor] forceRefresh ${session.sessionLabel}: no new players (captured ${lineup.players.length}, all known)`,
-      );
-      session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
-      this.persist();
+      // additive (default) — original behaviour
+      if (entrants.length > 0) {
+        console.log(
+          `[StreamMonitor] forceRefresh ${session.sessionLabel}: ${entrants.length} new player(s): ${entrants.map((p) => p.name).join(", ")}`,
+        );
+        for (const p of entrants) {
+          const markets = newEntrantMarketsFor(session.sessionLabel, p);
+          for (const m of markets) {
+            await this.safeSeed(session.handleIdHex, m);
+          }
+        }
+        session.lineup = [...session.lineup, ...entrants];
+        session.lineupHash = lineupHash(session.lineup);
+      } else {
+        console.log(
+          `[StreamMonitor] forceRefresh ${session.sessionLabel}: no new players (captured ${lineup.players.length}, all known)`,
+        );
+      }
     }
+
+    session.lastLineupCheckAt = Math.floor(Date.now() / 1000);
+    this.persist();
 
     return {
       sessionLabel: session.sessionLabel,
@@ -393,8 +466,11 @@ export class StreamMonitor {
       videoId: session.videoId,
       capturedPlayers: lineup.players.map((p) => p.name),
       entrantsSeeded: entrants.map((p) => p.name),
+      reseededPlayers,
+      droppedMarketIds,
       lineupSize: session.lineup.length,
       reconstructed,
+      mode,
     };
   }
 
@@ -707,6 +783,24 @@ export class StreamMonitor {
       console.error("[StreamMonitor] State persist failed:", err);
     }
   }
+}
+
+/** Pull player names out of a market label by reversing the templates
+ *  in marketTemplates.ts. Generics return []. Per-player return [X].
+ *  H2H return [X, Y]. Used by replace-mode to identify which markets
+ *  reference ghost players that should be detached from the ledger. */
+function playerNamesReferencedByLabel(label: string): string[] {
+  // Per-player templates
+  const single = label.match(
+    /^Will (.+?) (?:bluff the most this session|bust first|win the biggest pot tonight|win the most hands tonight)\?$/,
+  );
+  if (single) return [single[1].trim()];
+  // H2H templates
+  const h2hBluff = label.match(/^Will (.+?) bluff more than (.+?) tonight\?$/);
+  if (h2hBluff) return [h2hBluff[1].trim(), h2hBluff[2].trim()];
+  const h2hPot = label.match(/^Will (.+?) win a bigger pot than (.+?) tonight\?$/);
+  if (h2hPot) return [h2hPot[1].trim(), h2hPot[2].trim()];
+  return [];
 }
 
 /** Match the lineupExtractor's placeholder filter so refresh can also

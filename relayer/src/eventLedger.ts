@@ -154,6 +154,33 @@ export class EventLedger {
     this.persist();
   }
 
+  /** Drop a specific list of marketIds from an event. The on-chain
+   *  market accounts stay rent-funded (Solana accounts can't be cheaply
+   *  closed, and dangling fills against them remain valid) — this only
+   *  removes the off-chain binding so the UI stops surfacing those
+   *  markets under this event card. Used by the replace-lineup refresh
+   *  mode to drop ghost-player markets when a session's player set
+   *  turns over but the EventHandle is preserved. */
+  detachMarkets(handleId: string, marketIdsToDrop: string[]): { dropped: number } {
+    const ev = this.events.get(handleId);
+    if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
+    const drop = new Set(marketIdsToDrop.map((m) => m.toLowerCase()));
+    let dropped = 0;
+    ev.marketIds = ev.marketIds.filter((m) => {
+      if (drop.has(m.toLowerCase())) { dropped++; return false; }
+      return true;
+    });
+    if (ev.marketLabels) {
+      const remaining: Record<string, string> = {};
+      for (const [mid, lbl] of Object.entries(ev.marketLabels)) {
+        if (!drop.has(mid.toLowerCase())) remaining[mid] = lbl;
+      }
+      ev.marketLabels = remaining;
+    }
+    this.persist();
+    return { dropped };
+  }
+
   /** Drop an event from the off-chain ledger. The on-chain EventHandle
    *  PDA is unaffected — it stays rent-funded and could be re-registered
    *  later via register() (idempotent on handleId). Use to nuke stale

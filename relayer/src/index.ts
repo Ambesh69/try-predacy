@@ -1456,8 +1456,21 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
     // state. Pass via ?videoId=… (or body.videoId for tools that POST
     // JSON).
     const videoId = (req.query.videoId as string) || (req.body?.videoId as string) || undefined;
+    // mode controls what the refresh does with the captured lineup:
+    //   additive (default) — only seed markets for newly-seen players
+    //   reseed             — idempotently re-run market seeding for every
+    //                        captured player. Use when the active session
+    //                        knows about a player but their markets were
+    //                        never (or only partially) attached on-chain.
+    //   replace            — drop markets for players in the prior lineup
+    //                        but NOT in this capture (ghost players from
+    //                        a turned-over table). Captured players get
+    //                        idempotent reseed.
+    const modeRaw = ((req.query.mode as string) || (req.body?.mode as string) || "additive").toLowerCase();
+    const mode = (["additive", "reseed", "replace"].includes(modeRaw) ? modeRaw : "additive") as
+      | "additive" | "reseed" | "replace";
     const t0 = Date.now();
-    const result = await streamMonitor.forceRefresh(identifier, videoId);
+    const result = await streamMonitor.forceRefresh(identifier, videoId, mode);
     res.json({
       ok: true,
       elapsedMs: Date.now() - t0,
