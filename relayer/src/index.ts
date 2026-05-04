@@ -1205,11 +1205,14 @@ async function seedMarketUnderEvent(
 // the standard generic prop markets. Player-aware market instantiation
 // + transcript-based settlement get layered on by later phases.
 import { StreamMonitor } from "./agent/streamMonitor";
+import { getSessionStats } from "./agent/sessionStats";
 
+const sessionStats = getSessionStats();
 const streamMonitor = new StreamMonitor({
   apiKey: process.env.YOUTUBE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   ledger: eventLedger,
+  stats: sessionStats,
   createEvent: async ({ label, category, closesAt }) => {
     const out = await createEventOnChain({ label, category, closesAt });
     return { handleIdHex: out.handleIdHex, eventHandlePda: out.eventHandlePda };
@@ -1217,6 +1220,25 @@ const streamMonitor = new StreamMonitor({
   seedMarket: seedMarketUnderEvent,
 });
 streamMonitor.start();
+
+/**
+ * GET /agent/stats?handleId=…  or  ?session=…
+ * Returns the SessionStats record for a given session or EventHandle.
+ * Used by the live-standings panel on the event detail page.
+ */
+app.get("/agent/stats", (req, res) => {
+  const handleId = (req.query.handleId as string) || "";
+  const sessionLabel = (req.query.session as string) || "";
+  if (!handleId && !sessionLabel) {
+    return res.status(400).json({ error: "handleId or session required" });
+  }
+  const all = sessionStats.list();
+  const hit = sessionLabel
+    ? all.find((s) => s.sessionLabel === sessionLabel)
+    : all.find((s) => s.handleIdHex.toLowerCase() === handleId.toLowerCase());
+  if (!hit) return res.status(404).json({ error: "no stats for that session" });
+  res.json(hit);
+});
 
 /**
  * POST /agent/extract?videoId=X
@@ -1230,7 +1252,9 @@ streamMonitor.start();
  *   intervalSec  (default 12) — gap between frames in seconds
  */
 import { LineupExtractor } from "./agent/lineupExtractor";
+import { GameStateExtractor } from "./agent/gameStateExtractor";
 const debugExtractor = new LineupExtractor(process.env.OPENAI_API_KEY ?? "");
+const debugGameState = new GameStateExtractor(process.env.OPENAI_API_KEY ?? "");
 app.post("/agent/extract", async (req, res) => {
   try {
     const videoId = (req.query.videoId as string) || (req.body?.videoId as string);
@@ -1246,6 +1270,30 @@ app.post("/agent/extract", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[POST /agent/extract] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /agent/snapshot?videoId=X
+ * Debug endpoint — runs ONE game-state OCR snapshot against an arbitrary
+ * videoId (no agent loop, no stats accumulation, no ledger touch).
+ * Useful for tuning the gameState prompt and seeing what the OCR is
+ * actually reporting for a given moment.
+ */
+app.post("/agent/snapshot", async (req, res) => {
+  try {
+    const videoId = (req.query.videoId as string) || (req.body?.videoId as string);
+    if (!videoId) return res.status(400).json({ error: "videoId required" });
+    const t0 = Date.now();
+    const result = await debugGameState.snapshot(videoId);
+    res.json({
+      ok: !!result,
+      elapsedMs: Date.now() - t0,
+      result,
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/snapshot] Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

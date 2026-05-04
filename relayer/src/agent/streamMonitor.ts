@@ -48,10 +48,13 @@ import {
   ChannelTag,
   SeededMarket,
 } from "./marketTemplates";
+import { GameStateExtractor } from "./gameStateExtractor";
+import { SessionStats } from "./sessionStats";
 
 const POLL_INTERVAL_MS = 60_000;
 const LINEUP_RECHECK_MS = 10 * 60 * 1000;   // re-OCR active session every 10 min
 const OFFLINE_GRACE_MS = 5 * 60 * 1000;     // tolerate 5 min of "video gone" before ending session
+const GAME_STATE_INTERVAL_MS = 5_000;       // game-state snapshots while session active
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
 
 export interface MonitoredChannel {
@@ -105,6 +108,11 @@ export class StreamMonitor {
   private apiKey: string;
   private ledger: EventLedger;
   private extractor: LineupExtractor;
+  /** Vision OCR for per-frame game state (pot, hand strengths, busts,
+   *  winners). Runs at 5s cadence per active session. */
+  private gameState: GameStateExtractor;
+  /** Per-session running counters populated from gameState snapshots. */
+  private stats: SessionStats;
   private createEvent: (args: CreateEventArgs) => Promise<CreateEventResult>;
   private seedMarket: (eventHandleHex: string, marketIdHex: string, label: string) => Promise<void>;
   private channels: MonitoredChannel[];
@@ -112,11 +120,15 @@ export class StreamMonitor {
   private state: SessionStore;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  /** Per-active-session game-state polling loops, keyed by lineup hash.
+   *  Started when a session is created, stopped when it ends. */
+  private gameStateTimers: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(args: {
     apiKey: string;
     openaiApiKey: string;
     ledger: EventLedger;
+    stats: SessionStats;
     createEvent: (args: CreateEventArgs) => Promise<CreateEventResult>;
     seedMarket: (eventHandleHex: string, marketIdHex: string, label: string) => Promise<void>;
     channels?: MonitoredChannel[];
@@ -125,6 +137,8 @@ export class StreamMonitor {
     this.apiKey = args.apiKey;
     this.ledger = args.ledger;
     this.extractor = new LineupExtractor(args.openaiApiKey);
+    this.gameState = new GameStateExtractor(args.openaiApiKey);
+    this.stats = args.stats;
     this.createEvent = args.createEvent;
     this.seedMarket = args.seedMarket;
     this.channels = args.channels ?? DEFAULT_CHANNELS;
@@ -132,6 +146,10 @@ export class StreamMonitor {
       || process.env.AGENT_SESSION_STORE
       || (process.env.LEDGER_PATH ? DEFAULT_SESSION_STORE : FALLBACK_SESSION_STORE);
     this.state = this.loadState();
+    // Resume game-state loops for any sessions persisted from a prior boot.
+    for (const sess of this.listActive()) {
+      this.startGameStateLoop(sess);
+    }
   }
 
   get enabled(): boolean { return !!this.apiKey; }
@@ -175,6 +193,55 @@ export class StreamMonitor {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    for (const t of this.gameStateTimers.values()) clearTimeout(t);
+    this.gameStateTimers.clear();
+  }
+
+  // ─── Per-session game-state loop ───────────────────────────────────
+  // Each active session runs its own 5s ticker that pulls a frame, OCRs
+  // the game-state regions, and feeds the result into SessionStats.
+  // Self-rescheduling so a slow OCR can't get a fresh tick stacked on
+  // top of it.
+
+  private startGameStateLoop(sess: ActiveSession): void {
+    if (!this.gameState.enabled) return;
+    if (this.gameStateTimers.has(sess.lineupHash)) return; // already running
+    console.log(`[StreamMonitor] ${sess.channelTag} starting game-state loop for ${sess.sessionLabel}`);
+    this.scheduleGameStateTick(sess, 1000); // first tick fast
+  }
+
+  private stopGameStateLoop(lineupHash: string): void {
+    const t = this.gameStateTimers.get(lineupHash);
+    if (t) {
+      clearTimeout(t);
+      this.gameStateTimers.delete(lineupHash);
+    }
+  }
+
+  private scheduleGameStateTick(sess: ActiveSession, delayMs: number): void {
+    const handle = setTimeout(async () => {
+      // Bail if the session was ended while we were sleeping.
+      if (!this.state.active[sess.lineupHash]) {
+        this.gameStateTimers.delete(sess.lineupHash);
+        return;
+      }
+      try {
+        const snap = await this.gameState.snapshot(sess.videoId);
+        if (snap) {
+          this.stats.recordSnapshot(sess.sessionLabel, sess.handleIdHex, snap);
+        }
+      } catch (err: any) {
+        // Errors are already logged inside the extractor; just keep ticking.
+      } finally {
+        // Re-read in case another path mutated active map mid-tick.
+        if (this.state.active[sess.lineupHash]) {
+          this.scheduleGameStateTick(sess, GAME_STATE_INTERVAL_MS);
+        } else {
+          this.gameStateTimers.delete(sess.lineupHash);
+        }
+      }
+    }, delayMs);
+    this.gameStateTimers.set(sess.lineupHash, handle);
   }
 
   /** Currently-active session for a channel, if any. Used by downstream
@@ -443,6 +510,10 @@ export class StreamMonitor {
     }
 
     console.log(`[StreamMonitor] ${ch.tag} ${sessionLabel} seeded ${5 + lineup.players.length * 4 + (lineup.players.length >= 2 ? 2 : 0)} markets`);
+
+    // Initialise stats record + spin up the game-state OCR loop.
+    this.stats.ensureSession(sessionLabel, created.handleIdHex);
+    this.startGameStateLoop(session);
   }
 
   private async safeSeed(handleHex: string, m: SeededMarket): Promise<void> {
@@ -460,9 +531,10 @@ export class StreamMonitor {
    *  up); LP capital auto-refunds at closesAt regardless. */
   private endSession(session: ActiveSession, reason: string): void {
     console.log(`[StreamMonitor] ${session.channelTag} ending session ${session.sessionLabel}: ${reason}`);
+    this.stopGameStateLoop(session.lineupHash);
     delete this.state.active[session.lineupHash];
     // TODO(day-5): emit settlement-pending event for the settlement engine
-    // to pick up. Tracked outcomes per market need to be passed along.
+    // to pick up. Stats for this session live in this.stats.get(label).
   }
 
   // ─── State persistence ─────────────────────────────────────────────
