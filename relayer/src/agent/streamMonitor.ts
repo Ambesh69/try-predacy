@@ -1,41 +1,62 @@
 /**
- * Stream Monitor — discovers when watched poker channels go live and drives
- * the EventHandle lifecycle for that session.
+ * Stream Monitor — discovers live poker broadcasts and drives the
+ * EventHandle lifecycle, keying *sessions by lineup* rather than by
+ * YouTube videoId.
  *
- * For v1 (today, day 2 of Phase 2):
- *   - Polls YouTube Data API every 60s for the configured channels.
- *   - When a channel transitions OFFLINE → LIVE, registers a Predacy
- *     EventHandle for the session and seeds 5 generic prop markets.
- *   - Tracks active sessions in /data so we don't double-create across
- *     relayer restarts.
+ * Why lineup-keyed?
+ *   Triton and HCL run continuous-stream channels. A single videoId
+ *   can carry multiple distinct cash games over hours/days (one ends,
+ *   players swap out, a new game starts on the same broadcast). And
+ *   a single game can span multiple videoIds if the producer restarts
+ *   the stream. The thing we actually care about — for LP commitment,
+ *   for market settlement — is "the set of players currently at the
+ *   table." That's the session.
  *
- * Phases not yet wired (build out over days 3-5):
- *   - Lineup extraction (vision OCR on opening frames)         → day 3
- *   - Player-aware market instantiation                         → day 3
- *   - Whisper transcription of stream audio                     → day 4
- *   - Event classifier (bluff/bust/pot/quads detection)         → day 4
- *   - Settlement on session end                                 → day 5
+ * So a session is identified by `hash(channel + date + lineup)`. The
+ * monitor:
+ *   1. Polls YouTube every 60s for live videos on each watched channel.
+ *   2. For each live video, extracts the table lineup via GPT-4o vision.
+ *   3. Looks up the session by lineup hash:
+ *        - already active → just update bookkeeping (lastSeenAt)
+ *        - new lineup     → start session: create EventHandle, seed
+ *                           generic + player-aware markets
+ *   4. Re-OCRs the active session every 10 min to detect:
+ *        - mid-session entrants  → seed their per-player markets
+ *        - full lineup turnover  → end prior session (settle later),
+ *                                  start a new one
+ *   5. Grace-periods went-offline videos for 5 min before declaring a
+ *      session ended (in case the stream is just briefly dropped).
  *
- * The monitor is intentionally idempotent: every poll re-checks live state
- * and the createSession path bails out if the videoId is already active.
- * Safe to run alongside hot-reload / multiple relayer restarts.
+ * Cost guard: lineup OCR is only called when a videoId is first seen,
+ * or every 10 min on an active session — not every poll. Roughly $0.08
+ * per channel per 4hr session at GPT-4o vision pricing.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { EventLedger, EventCategory } from "../eventLedger";
+import {
+  LineupExtractor,
+  Lineup,
+  Player,
+  lineupHash,
+} from "./lineupExtractor";
+import {
+  genericMarketsFor,
+  playerMarketsFor,
+  newEntrantMarketsFor,
+  ChannelTag,
+  SeededMarket,
+} from "./marketTemplates";
 
 const POLL_INTERVAL_MS = 60_000;
+const LINEUP_RECHECK_MS = 10 * 60 * 1000;   // re-OCR active session every 10 min
+const OFFLINE_GRACE_MS = 5 * 60 * 1000;     // tolerate 5 min of "video gone" before ending session
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
 
-// Channels we monitor for live broadcasts. ChannelIds resolved once via
-// /channels?forHandle=... — see scripts/dev-notes for the resolution.
 export interface MonitoredChannel {
-  /** Short uppercase tag — used as a label prefix (e.g. "TRITON-...") */
-  tag: string;
-  /** YouTube channelId (UC...) */
+  tag: ChannelTag;
   channelId: string;
-  /** Human-readable channel name for logs/UI */
   name: string;
 }
 
@@ -45,43 +66,29 @@ export const DEFAULT_CHANNELS: MonitoredChannel[] = [
 ];
 
 interface ActiveSession {
-  videoId: string;
-  channelTag: string;
+  sessionLabel: string;
+  channelTag: ChannelTag;
   channelId: string;
   channelName: string;
-  title: string;
-  /** Hex handle id of the EventHandle backing this session. */
+  videoId: string;
+  videoTitle: string;
   handleIdHex: string;
+  lineup: Player[];
+  lineupHash: string;
   startedAt: number;
+  lastSeenAt: number;
+  lastLineupCheckAt: number;
 }
 
 interface SessionStore {
-  /** keyed by videoId */
+  schemaVersion: 2;
+  /** Keyed by lineup hash (the session identity), not videoId. */
   active: Record<string, ActiveSession>;
   lastPollAt: number;
 }
 
 const DEFAULT_SESSION_STORE = "/data/agent-sessions.json";
 const FALLBACK_SESSION_STORE = path.join(__dirname, "..", "..", "agent-sessions.json");
-
-// Standard prop markets seeded under every new session. Keyed by slug so
-// the marketId is deterministic across restarts (sha256("<event>/<slug>")).
-// The whale-pot threshold is parameterized per channel — Triton plays
-// bigger than HCL on average.
-export interface GenericMarketTemplate {
-  slug: string;
-  label: (channelTag: string) => string;
-}
-
-export const GENERIC_MARKETS: GenericMarketTemplate[] = [
-  { slug: "quads",     label: () => "Anyone hits quads tonight?" },
-  { slug: "royal",     label: () => "Anyone hits a royal flush tonight?" },
-  { slug: "whale_pot", label: (tag) =>
-      tag === "TRITON" ? "Will any pot exceed $500K tonight?" :
-                         "Will any pot exceed $200K tonight?" },
-  { slug: "early_bust", label: () => "First player busts within 90 minutes?" },
-  { slug: "ten_allins", label: () => "10+ all-ins tonight?" },
-];
 
 export interface CreateEventArgs {
   label: string;
@@ -97,17 +104,8 @@ export interface CreateEventResult {
 export class StreamMonitor {
   private apiKey: string;
   private ledger: EventLedger;
-  /** Hook to put an EventHandle on-chain + register it in the ledger.
-   *  Injected because the actual flow uses the Solana client which lives
-   *  in index.ts. Should be idempotent (safe to call for an existing
-   *  EventHandle — the on-chain create returns "already in use" and the
-   *  ledger upserts the label). */
+  private extractor: LineupExtractor;
   private createEvent: (args: CreateEventArgs) => Promise<CreateEventResult>;
-  /** Hook to seed (or re-seed) a market under an event. Should:
-   *    1. Call processor.startMarket(marketId) to create the on-chain market
-   *    2. Call client.initBootstrapPool(marketId, eventHandlePda)
-   *    3. Call eventLedger.attachMarket(eventHandle, marketId, label)
-   *  All three idempotent — already-exists errors caught. */
   private seedMarket: (eventHandleHex: string, marketIdHex: string, label: string) => Promise<void>;
   private channels: MonitoredChannel[];
   private storePath: string;
@@ -117,6 +115,7 @@ export class StreamMonitor {
 
   constructor(args: {
     apiKey: string;
+    openaiApiKey: string;
     ledger: EventLedger;
     createEvent: (args: CreateEventArgs) => Promise<CreateEventResult>;
     seedMarket: (eventHandleHex: string, marketIdHex: string, label: string) => Promise<void>;
@@ -125,6 +124,7 @@ export class StreamMonitor {
   }) {
     this.apiKey = args.apiKey;
     this.ledger = args.ledger;
+    this.extractor = new LineupExtractor(args.openaiApiKey);
     this.createEvent = args.createEvent;
     this.seedMarket = args.seedMarket;
     this.channels = args.channels ?? DEFAULT_CHANNELS;
@@ -134,19 +134,20 @@ export class StreamMonitor {
     this.state = this.loadState();
   }
 
-  get enabled(): boolean {
-    return !!this.apiKey;
-  }
+  get enabled(): boolean { return !!this.apiKey; }
 
   start(): void {
     if (!this.enabled) {
       console.log("[StreamMonitor] YOUTUBE_API_KEY not set — monitor disabled");
       return;
     }
+    if (!this.extractor.enabled) {
+      console.warn("[StreamMonitor] OPENAI_API_KEY not set — sessions can't be lineup-keyed; monitor disabled");
+      return;
+    }
     if (this.running) return;
     this.running = true;
     console.log(`[StreamMonitor] Starting · ${this.channels.length} channels · poll every ${POLL_INTERVAL_MS / 1000}s`);
-    // Run once immediately, then on interval.
     this.poll().catch((err) => console.error("[StreamMonitor] First poll failed:", err.message));
     this.timer = setInterval(() => {
       this.poll().catch((err) => console.error("[StreamMonitor] Poll failed:", err.message));
@@ -161,10 +162,9 @@ export class StreamMonitor {
     }
   }
 
-  /** Returns the currently-active session for a channel, if any. Useful
-   *  for downstream stages (lineup extractor, transcriber) once they're
-   *  wired in. */
-  getActive(channelTag: string): ActiveSession | undefined {
+  /** Currently-active session for a channel, if any. Used by downstream
+   *  agent stages (transcriber, classifier) once they're wired in. */
+  getActive(channelTag: ChannelTag): ActiveSession | undefined {
     for (const sess of Object.values(this.state.active)) {
       if (sess.channelTag === channelTag) return sess;
     }
@@ -178,7 +178,8 @@ export class StreamMonitor {
   // ─── Polling loop ───────────────────────────────────────────────────
 
   private async poll(): Promise<void> {
-    this.state.lastPollAt = Math.floor(Date.now() / 1000);
+    const now = Math.floor(Date.now() / 1000);
+    this.state.lastPollAt = now;
 
     for (const ch of this.channels) {
       let live: { videoId: string; title: string }[] = [];
@@ -189,26 +190,32 @@ export class StreamMonitor {
         continue;
       }
 
-      const liveIds = new Set(live.map((v) => v.videoId));
+      const liveVideoIds = new Set(live.map((v) => v.videoId));
+      const activeForChannel = this.listActive().filter((s) => s.channelTag === ch.tag);
 
-      // Detect new go-live: video in liveIds but not in our active set yet.
       for (const v of live) {
-        if (this.state.active[v.videoId]) continue;
-        try {
-          await this.startSession(ch, v);
-        } catch (err: any) {
-          console.error(`[StreamMonitor] ${ch.tag} startSession failed: ${err.message}`);
+        const knownSession = activeForChannel.find((s) => s.videoId === v.videoId);
+
+        if (knownSession) {
+          // Existing video — touch lastSeen, do periodic re-OCR.
+          knownSession.lastSeenAt = now;
+          if (Date.now() - knownSession.lastLineupCheckAt * 1000 > LINEUP_RECHECK_MS) {
+            await this.recheckLineup(knownSession);
+            knownSession.lastLineupCheckAt = now;
+          }
+          continue;
         }
+
+        // New videoId for this channel — extract lineup to identify session.
+        await this.handleNewLiveVideo(ch, v, now);
       }
 
-      // Detect went-offline: previously-active video for this channel no
-      // longer in the live list. We mark it gone but DO NOT settle here —
-      // that's the settlementEngine's job (day 5 wiring).
-      for (const sess of Object.values(this.state.active)) {
-        if (sess.channelTag !== ch.tag) continue;
-        if (!liveIds.has(sess.videoId)) {
-          console.log(`[StreamMonitor] ${ch.tag} session ended: ${sess.videoId} (${sess.title.slice(0, 60)})`);
-          delete this.state.active[sess.videoId];
+      // Active sessions whose video disappeared from the live feed.
+      // Hold for OFFLINE_GRACE_MS before declaring ended.
+      for (const sess of activeForChannel) {
+        if (liveVideoIds.has(sess.videoId)) continue;
+        if (Date.now() - sess.lastSeenAt * 1000 > OFFLINE_GRACE_MS) {
+          this.endSession(sess, "video offline past grace period");
         }
       }
     }
@@ -229,58 +236,155 @@ export class StreamMonitor {
       .map((it) => ({ videoId: it.id.videoId as string, title: it.snippet?.title ?? "" }));
   }
 
-  private async startSession(ch: MonitoredChannel, v: { videoId: string; title: string }): Promise<void> {
-    // EventHandle label uniquely identifies this session: channel tag +
-    // ISO date + short videoId so two days of the same channel produce
-    // distinct EventHandles, and a 24/7 stream that briefly drops gets
-    // a NEW session each time it goes live (which is what we want — we
-    // settle the old one when it goes offline).
+  private async handleNewLiveVideo(
+    ch: MonitoredChannel,
+    v: { videoId: string; title: string },
+    now: number,
+  ): Promise<void> {
+    console.log(`[StreamMonitor] ${ch.tag} new live video ${v.videoId}: ${v.title.slice(0, 60)}`);
+    const lineup = await this.extractor.extract(v.videoId);
+    if (!lineup) {
+      console.warn(`[StreamMonitor] ${ch.tag} lineup extract returned null — skipping`);
+      return;
+    }
+    if (!lineup.confident) {
+      console.log(`[StreamMonitor] ${ch.tag} non-confident lineup (intermission/replay?) — skipping for now`);
+      return;
+    }
+
+    // Does this lineup match an already-active session? (Stream restart
+    // mid-game is the classic case — different videoId, same players.)
+    const existing = this.state.active[lineup.hash];
+    if (existing) {
+      console.log(`[StreamMonitor] ${ch.tag} session ${existing.sessionLabel} continues on new video ${v.videoId}`);
+      existing.videoId = v.videoId;
+      existing.videoTitle = v.title;
+      existing.lastSeenAt = now;
+      existing.lastLineupCheckAt = now;
+      return;
+    }
+
+    await this.startSession(ch, v, lineup, now);
+  }
+
+  /** Re-OCR an active session and react to lineup changes. */
+  private async recheckLineup(session: ActiveSession): Promise<void> {
+    const lineup = await this.extractor.extract(session.videoId);
+    if (!lineup || !lineup.confident) {
+      // Not confident — don't act on it. Could be a hand transition, a
+      // close-up shot, etc. The next recheck in 10 min will retry.
+      return;
+    }
+
+    if (lineup.hash === session.lineupHash) return; // unchanged
+
+    // Compare name sets to decide entrant vs full-turnover.
+    const oldNames = new Set(session.lineup.map((p) => p.name.toLowerCase()));
+    const newNames = new Set(lineup.players.map((p) => p.name.toLowerCase()));
+
+    let intersection = 0;
+    for (const n of newNames) if (oldNames.has(n)) intersection++;
+
+    const overlapRatio = intersection / Math.max(oldNames.size, newNames.size, 1);
+    if (overlapRatio < 0.5) {
+      // Mostly different players → previous session is done.
+      console.log(`[StreamMonitor] ${session.channelTag} lineup turnover detected (overlap=${(overlapRatio * 100).toFixed(0)}%) — ending ${session.sessionLabel}`);
+      this.endSession(session, "lineup turnover");
+      // Next poll will re-detect the new lineup as a fresh session.
+      return;
+    }
+
+    // Partial overlap → option-A behavior: add markets for new entrants.
+    const entrants = lineup.players.filter((p) => !oldNames.has(p.name.toLowerCase()));
+    if (entrants.length === 0) {
+      // Players left but no one new sat down — reseating, no markets to add.
+      session.lineup = lineup.players;
+      session.lineupHash = lineup.hash;
+      return;
+    }
+
+    console.log(`[StreamMonitor] ${session.channelTag} ${entrants.length} new entrant(s) at ${session.sessionLabel}: ${entrants.map((p) => p.name).join(", ")}`);
+    for (const p of entrants) {
+      const markets = newEntrantMarketsFor(session.sessionLabel, p);
+      for (const m of markets) {
+        await this.safeSeed(session.handleIdHex, m);
+      }
+    }
+
+    // Update session state to reflect the new lineup. Note we deliberately
+    // keep the same handleIdHex / sessionLabel — the session continues,
+    // just with extra players covered.
+    session.lineup = lineup.players;
+    session.lineupHash = lineup.hash;
+  }
+
+  private async startSession(
+    ch: MonitoredChannel,
+    v: { videoId: string; title: string },
+    lineup: Lineup,
+    now: number,
+  ): Promise<void> {
     const date = new Date().toISOString().slice(0, 10);
-    const sessionLabel = `${ch.tag}-SESSION-${date}-${v.videoId.slice(0, 6)}`;
+    const sessionLabel = `${ch.tag}-SESSION-${date}-${lineup.hash.slice(0, 8)}`;
+    const closesAt = now + 12 * 3600;
 
-    // Default close: 12h from now. Continuous streams will get re-created
-    // on the next go-live anyway; this is just the LP auto-refund safety.
-    const closesAt = Math.floor(Date.now() / 1000) + 12 * 3600;
-
-    // Create the EventHandle on-chain + register in ledger (idempotent —
-    // handler swallows "already in use" so a relayer restart mid-session
-    // just upserts the label and keeps prior graduation/volume state).
     const created = await this.createEvent({
       label: sessionLabel,
-      category: "LiveStream" as EventCategory,
+      category: "LiveStream",
       closesAt,
     });
 
+    const playerList = lineup.players.map((p) => p.name).join(", ");
     console.log(`[StreamMonitor] ${ch.tag} session started: ${sessionLabel} (${v.videoId})`);
-    console.log(`                title: ${v.title.slice(0, 80)}`);
     console.log(`                handle: ${created.handleIdHex.slice(0, 12)}…  pda: ${created.eventHandlePda}`);
+    console.log(`                lineup: ${playerList}`);
 
-    this.state.active[v.videoId] = {
-      videoId: v.videoId,
+    const session: ActiveSession = {
+      sessionLabel,
       channelTag: ch.tag,
       channelId: ch.channelId,
       channelName: ch.name,
-      title: v.title,
+      videoId: v.videoId,
+      videoTitle: v.title,
       handleIdHex: created.handleIdHex,
-      startedAt: Math.floor(Date.now() / 1000),
+      lineup: lineup.players,
+      lineupHash: lineup.hash,
+      startedAt: now,
+      lastSeenAt: now,
+      lastLineupCheckAt: now,
     };
+    this.state.active[lineup.hash] = session;
 
-    // Seed the 5 generic prop markets via the injected hook. Player-aware
-    // markets are added by the lineup extractor on day 3.
-    for (const tpl of GENERIC_MARKETS) {
-      const marketId = await this.deriveMarketId(sessionLabel, tpl.slug);
-      const marketIdHex = marketId.toString("hex");
-      try {
-        await this.seedMarket(created.handleIdHex, marketIdHex, tpl.label(ch.tag));
-      } catch (err: any) {
-        console.warn(`[StreamMonitor] ${ch.tag} seed ${tpl.slug} failed: ${err.message}`);
-      }
+    // Seed generic markets first so the cards show up fast — these don't
+    // depend on the lineup. Player-aware markets follow.
+    for (const m of genericMarketsFor(ch.tag, sessionLabel)) {
+      await this.safeSeed(created.handleIdHex, m);
+    }
+    for (const m of playerMarketsFor(sessionLabel, lineup.players)) {
+      await this.safeSeed(created.handleIdHex, m);
+    }
+
+    console.log(`[StreamMonitor] ${ch.tag} ${sessionLabel} seeded ${5 + lineup.players.length * 4 + (lineup.players.length >= 2 ? 2 : 0)} markets`);
+  }
+
+  private async safeSeed(handleHex: string, m: SeededMarket): Promise<void> {
+    try {
+      await this.seedMarket(handleHex, m.marketIdHex, m.label);
+    } catch (err: any) {
+      console.warn(`[StreamMonitor] seed ${m.slug} failed: ${err.message}`);
     }
   }
 
-  private async deriveMarketId(sessionLabel: string, slug: string): Promise<Buffer> {
-    const crypto = await import("crypto");
-    return crypto.createHash("sha256").update(`${sessionLabel}/${slug}`).digest();
+  /** Mark a session as ended in our state. The actual on-chain settlement
+   *  is the settlement engine's job (day 5) — for now we just stop
+   *  tracking. The EventHandle on-chain is still there with its markets
+   *  so traders see it (with a "session ended" badge once the UI catches
+   *  up); LP capital auto-refunds at closesAt regardless. */
+  private endSession(session: ActiveSession, reason: string): void {
+    console.log(`[StreamMonitor] ${session.channelTag} ending session ${session.sessionLabel}: ${reason}`);
+    delete this.state.active[session.lineupHash];
+    // TODO(day-5): emit settlement-pending event for the settlement engine
+    // to pick up. Tracked outcomes per market need to be passed along.
   }
 
   // ─── State persistence ─────────────────────────────────────────────
@@ -289,12 +393,18 @@ export class StreamMonitor {
     try {
       if (fs.existsSync(this.storePath)) {
         const raw = fs.readFileSync(this.storePath, "utf-8");
-        return JSON.parse(raw) as SessionStore;
+        const parsed = JSON.parse(raw) as Partial<SessionStore>;
+        if (parsed.schemaVersion === 2) {
+          return parsed as SessionStore;
+        }
+        // v1 store (videoId-keyed) — not migratable. Start fresh; the
+        // poller will re-discover any active sessions on next tick.
+        console.log("[StreamMonitor] Ignoring v1 session store (lineup-keyed schema is incompatible)");
       }
     } catch (err) {
       console.warn("[StreamMonitor] State load failed:", err);
     }
-    return { active: {}, lastPollAt: 0 };
+    return { schemaVersion: 2, active: {}, lastPollAt: 0 };
   }
 
   private persist(): void {

@@ -1208,6 +1208,7 @@ import { StreamMonitor } from "./agent/streamMonitor";
 
 const streamMonitor = new StreamMonitor({
   apiKey: process.env.YOUTUBE_API_KEY ?? "",
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   ledger: eventLedger,
   createEvent: async ({ label, category, closesAt }) => {
     const out = await createEventOnChain({ label, category, closesAt });

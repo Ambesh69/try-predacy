@@ -13,10 +13,20 @@ WORKDIR /app
 # 0. Install build toolchain so `node-gyp` can compile native deps at install
 #    time. Required for `bigint-buffer` (transitive dep of @solana/web3.js).
 #    Without these the binding falls back to pure JS and emits the noisy
-#    "Failed to load bindings" warning on every boot. Install + apt cache
-#    cleanup in one RUN to keep image lean.
+#    "Failed to load bindings" warning on every boot.
+#
+#    Plus the agent-pipeline tools:
+#    - ffmpeg: extracts a single frame from a live HLS manifest, used by
+#      the lineup extractor (frame → GPT-4V → player names)
+#    - python3-pip + yt-dlp: resolves a YouTube live videoId to its current
+#      HLS stream URL (the public watch page returns a player iframe;
+#      yt-dlp parses the player config to get the actual media URL)
+#
+#    Install + apt cache cleanup in one RUN to keep image lean.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 make g++ ca-certificates && \
+    apt-get install -y --no-install-recommends \
+        python3 python3-pip make g++ ca-certificates ffmpeg && \
+    pip3 install --no-cache-dir --break-system-packages 'yt-dlp>=2025.1.1' && \
     rm -rf /var/lib/apt/lists/*
 
 # 1. Install deps from package.json + lockfile only (best build cache).
