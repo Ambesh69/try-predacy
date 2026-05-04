@@ -1174,6 +1174,7 @@ app.get("/events", (_req, res) => {
     graduated: ev.graduated,
     cumulativeVolumeUsdc: ev.cumulativeVolumeUsdc.toString(),
     marketCount: ev.marketIds.length,
+    marketIds: ev.marketIds,
     feeBpsTaker: ev.feeBpsTaker,
     feeBpsTreasury: ev.feeBpsTreasury,
     feeBpsRebates: ev.feeBpsRebates,

@@ -15,7 +15,7 @@ export default function PredacyEventCard({ event }: Props) {
   const display = event.label ?? `${event.handleId.slice(0, 8)}…`;
 
   return (
-    <Link href="/lp" className="block h-full">
+    <Link href={`/event/predacy/${event.handleId}`} className="block h-full">
       <div className={clsx(
         "market-card border bg-surface p-5 cursor-crosshair flex flex-col gap-3 h-full",
         event.graduated
@@ -69,7 +69,7 @@ export default function PredacyEventCard({ event }: Props) {
             Grad threshold ${formatUsdc6(event.graduationThresholdUsdc, 0)} × {event.graduationBatches}
           </span>
           <span className="flex items-center gap-1 text-[10px] text-accent tracking-widest uppercase">
-            Provide LP <span className="text-accent">→</span>
+            Open <span className="text-accent">→</span>
           </span>
         </div>
       </div>

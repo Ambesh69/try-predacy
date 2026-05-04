@@ -42,6 +42,14 @@ export interface EventDescriptor {
   feeBpsRebates: number;
   bootstrapSeedUsdc: string;
   closed: boolean;
+  /** Hex conditionIds (lowercase, no 0x) of markets bound under this event.
+   *  Optional because pre-marketIds entries from older relayer deploys lack it. */
+  marketIds?: string[];
+}
+
+export async function getEvent(handleIdHex: string): Promise<EventDescriptor | null> {
+  const events = await listEvents();
+  return events.find((e) => e.handleId.toLowerCase() === handleIdHex.toLowerCase()) ?? null;
 }
 
 export interface LPPosition {
