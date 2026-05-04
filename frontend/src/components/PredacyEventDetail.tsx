@@ -10,6 +10,7 @@ import {
   getEvent,
   relativeTime,
 } from "@/lib/lpApi";
+import LiveStandingsPanel from "@/components/LiveStandingsPanel";
 
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
@@ -91,6 +92,10 @@ export default function PredacyEventDetail({ params }: Props) {
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-[1fr_320px] gap-6">
         <div className="space-y-4">
+          {/* Agent's live read of the table — only renders for agent-
+              managed sessions (manually-seeded events have no stats). */}
+          <LiveStandingsPanel handleIdHex={event.handleId} />
+
           <SectionHeader>
             Markets <span className="text-muted-dim ml-1">({event.marketIds?.length ?? 0})</span>
           </SectionHeader>

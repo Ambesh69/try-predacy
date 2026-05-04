@@ -76,6 +76,44 @@ export async function getPredacyMarket(marketIdHex: string): Promise<PredacyMark
   }
 }
 
+// ─── Agent stats (live table state from the streamMonitor) ──────────
+
+export interface PerPlayerStats {
+  bluffs: number;
+  biggestPotWonUsd: number;
+  handsWon: number;
+  bustedAt: number | null;
+  allInsBy: number;
+}
+
+export interface SessionStatsRecord {
+  sessionLabel: string;
+  handleIdHex: string;
+  startedAt: number;
+  lastSnapshotAt: number;
+  framesProcessed: number;
+  players: Record<string, PerPlayerStats>;
+  maxPotSoFar: number;
+  maxPotWinnerName: string | null;
+  quadsHit: boolean;
+  royalFlushHit: boolean;
+  allInsCount: number;
+  bustsCount: number;
+  firstBustAt: number | null;
+  currentBoardCardCount: number;
+  handsSeen: number;
+}
+
+export async function getSessionStats(handleIdHex: string): Promise<SessionStatsRecord | null> {
+  try {
+    return await relayerJson<SessionStatsRecord>(
+      `/agent/stats?handleId=${encodeURIComponent(handleIdHex)}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export interface LPPosition {
   /** Hex handle id of the event this position is in. */
   handleId: string;
