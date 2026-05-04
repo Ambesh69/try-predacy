@@ -206,42 +206,84 @@ export class StreamMonitor {
   }
 
   private async pollChannel(ch: MonitoredChannel, now: number): Promise<void> {
-    let live: { videoId: string; title: string }[] = [];
-    try {
-      live = await this.fetchLiveBroadcasts(ch.channelId);
-    } catch (err: any) {
-      console.warn(`[StreamMonitor] ${ch.tag} fetch failed: ${err.message}`);
-      return;
-    }
-
-    const liveVideoIds = new Set(live.map((v) => v.videoId));
     const activeForChannel = this.listActive().filter((s) => s.channelTag === ch.tag);
 
-    for (const v of live) {
-      const knownSession = activeForChannel.find((s) => s.videoId === v.videoId);
+    // Quota-conscious flow:
+    //   - For each active session, ping videos.list?id=videoId (1 unit)
+    //     to check it's still live. Cheap.
+    //   - Only call search.list (100 units) for DISCOVERY when this
+    //     channel has no active session — i.e., we're hunting for a new
+    //     stream to start watching.
+    //
+    // Default YouTube Data API quota is 10,000 units/day, so the old
+    // pattern (search.list every poll for every channel = 200 units/poll
+    // × 1440 polls = 288k units/day) blew through it in ~50 min.
 
-      if (knownSession) {
-        // Existing video — touch lastSeen, do periodic re-OCR.
-        knownSession.lastSeenAt = now;
-        if (Date.now() - knownSession.lastLineupCheckAt * 1000 > LINEUP_RECHECK_MS) {
-          await this.recheckLineup(knownSession);
-          knownSession.lastLineupCheckAt = now;
-        }
+    // 1. Ping known active videos.
+    for (const sess of activeForChannel) {
+      let stillLive = false;
+      try {
+        stillLive = await this.isVideoLive(sess.videoId);
+      } catch (err: any) {
+        console.warn(`[StreamMonitor] ${ch.tag} videos.list ${sess.videoId} failed: ${err.message}`);
+        // Don't end the session on a single API hiccup — let the OFFLINE
+        // grace period handle it.
         continue;
       }
 
-      // New videoId for this channel — extract lineup to identify session.
-      await this.handleNewLiveVideo(ch, v, now);
-    }
-
-    // Active sessions whose video disappeared from the live feed.
-    // Hold for OFFLINE_GRACE_MS before declaring ended.
-    for (const sess of activeForChannel) {
-      if (liveVideoIds.has(sess.videoId)) continue;
-      if (Date.now() - sess.lastSeenAt * 1000 > OFFLINE_GRACE_MS) {
-        this.endSession(sess, "video offline past grace period");
+      if (stillLive) {
+        sess.lastSeenAt = now;
+        if (Date.now() - sess.lastLineupCheckAt * 1000 > LINEUP_RECHECK_MS) {
+          await this.recheckLineup(sess);
+          sess.lastLineupCheckAt = now;
+        }
+      } else {
+        // Video has ended on YouTube's side. Stay in grace period in
+        // case the broadcaster restarts on a new videoId — we'd then
+        // pick that up via discovery (next branch).
+        if (Date.now() - sess.lastSeenAt * 1000 > OFFLINE_GRACE_MS) {
+          this.endSession(sess, "video confirmed offline past grace period");
+        }
       }
     }
+
+    // 2. Discovery: only if this channel currently has no active session.
+    //    The active-session check is re-evaluated post-step-1 in case the
+    //    grace period just expired.
+    const stillActive = this.listActive().some((s) => s.channelTag === ch.tag);
+    if (stillActive) return;
+
+    let discovered: { videoId: string; title: string }[] = [];
+    try {
+      discovered = await this.fetchLiveBroadcasts(ch.channelId);
+    } catch (err: any) {
+      console.warn(`[StreamMonitor] ${ch.tag} discovery failed: ${err.message}`);
+      return;
+    }
+
+    for (const v of discovered) {
+      await this.handleNewLiveVideo(ch, v, now);
+    }
+  }
+
+  /** Cheap (1 unit) check via videos.list?id=…&part=liveStreamingDetails.
+   *  Returns true if the video is still actively broadcasting (no
+   *  actualEndTime set), false if it's ended or not found. */
+  private async isVideoLive(videoId: string): Promise<boolean> {
+    const url = `${YOUTUBE_API}/videos?part=liveStreamingDetails&id=${videoId}&key=${this.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`YouTube ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const data = await res.json() as { items?: any[] };
+    const item = data.items?.[0];
+    if (!item) return false; // video deleted/private
+    const details = item.liveStreamingDetails;
+    if (!details) return false; // not a live broadcast (recorded video)
+    // actualEndTime is set the moment the broadcaster ends the stream.
+    // While live, only actualStartTime is set.
+    return !details.actualEndTime;
   }
 
   private async fetchLiveBroadcasts(channelId: string): Promise<{ videoId: string; title: string }[]> {
