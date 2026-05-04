@@ -63,10 +63,19 @@ const PERSISTENT_BACKOFF_MS = 15 * 60_000;
 
 // Multi-frame sampling. Pro-poker broadcasts only overlay nameplates for
 // the players currently IN the hand (folded players' tiles disappear).
-// A single frame catches 1-3 names; sampling across the rotation of
-// hands surfaces the full 6-9 player table over ~45 seconds.
-const DEFAULT_NUM_FRAMES = 4;
-const DEFAULT_INTERVAL_SEC = 12; // 4 frames × 12s gap = ~48s coverage
+// A single frame catches 1-3 names; the broadcast cycles to a wide-
+// angle "table view" with 6+ visible nameplates roughly once per ~60s.
+// 8 frames at 15s intervals gives ~120s coverage which reliably catches
+// at least one wide-angle shot, surfacing the full lineup in a single
+// extraction pass.
+//
+// Empirical result on Triton Cash Game Invitational I:
+//   4 × 12s (48s) → 1-2 players (single hand only)
+//   8 × 15s (120s) → 6 players (catches wide-angle shot)
+//
+// Cost: 8 × $0.003 = $0.024 per extraction. Cheap relative to value.
+const DEFAULT_NUM_FRAMES = 8;
+const DEFAULT_INTERVAL_SEC = 15;
 
 interface FailureRecord {
   failedAt: number;
