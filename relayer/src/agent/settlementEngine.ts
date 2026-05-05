@@ -89,6 +89,69 @@ export function classifyMarketLabel(label: string): Classified {
 const canon = (s: string): string =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
 
+/** Token list for fuzzy name matching. Splits on whitespace +
+ *  punctuation, lowercases + strips accents, drops 1-2 letter
+ *  tokens (initials, particles like "de", "la") that match too
+ *  aggressively. */
+function nameTokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3);
+}
+
+/** Fuzzy player-name match. The gameState OCR sees abbreviated/casual
+ *  forms ("airball" instead of "NIK AIRBALL", "britney" instead of
+ *  "BRITNEY", "phua" instead of "PAUL PHUA") while market labels
+ *  carry the full lineup form. Strict canon() equality misses all of
+ *  these and resolves real winners as NO across the board.
+ *
+ *  Match rules (any one is sufficient):
+ *    1. canon equality                           ("BRITNEY" ≡ "britney")
+ *    2. one canon-form is a substring of the other, length ≥ 3
+ *                                                ("phua" ⊂ "paulphua")
+ *    3. any 3+ char token from one name appears in the other's tokens
+ *                                                ("AIRBALL" ∈ "NIK AIRBALL".tokens)
+ *
+ *  The 3-char floor is what stops "a" / "de" / "la" / "el" / "2" from
+ *  collapsing the whole namespace to a single bucket. */
+function nameMatch(a: string, b: string): boolean {
+  const ca = canon(a);
+  const cb = canon(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  if (ca.length >= 3 && cb.includes(ca)) return true;
+  if (cb.length >= 3 && ca.includes(cb)) return true;
+  const tokensA = nameTokens(a);
+  const tokensB = nameTokens(b);
+  if (tokensA.length === 0 || tokensB.length === 0) return false;
+  const setB = new Set(tokensB);
+  for (const t of tokensA) {
+    if (setB.has(t)) return true;
+  }
+  return false;
+}
+
+/** Look up per-player stats with the same fuzzy name matching used by
+ *  the resolution path. SessionStats keys players by `canon(name)` of
+ *  whatever the OCR reported, which often differs from the market
+ *  label's full name. Falls back to a direct canon lookup before the
+ *  scan since that's the common case. */
+function lookupPlayerStats(
+  stats: SessionStatsRecord | undefined,
+  player: string,
+): SessionStatsRecord["players"][string] | undefined {
+  if (!stats) return undefined;
+  const direct = stats.players[canon(player)];
+  if (direct) return direct;
+  for (const [k, v] of Object.entries(stats.players)) {
+    if (nameMatch(k, player)) return v;
+  }
+  return undefined;
+}
+
 export interface PendingResolution {
   marketIdHex: string;
   label: string;
@@ -188,7 +251,7 @@ export function computeResolutions(
         if (!stats || mostBluffsWinner === null) {
           push(2, "session ended with no bluffs recorded");
         } else {
-          push(canon(c.player) === canon(mostBluffsWinner) ? 1 : 2,
+          push(nameMatch(c.player, mostBluffsWinner) ? 1 : 2,
             `most bluffs: ${mostBluffsWinner} (${stats.players[mostBluffsWinner]?.bluffs ?? 0})`);
         }
         break;
@@ -196,7 +259,7 @@ export function computeResolutions(
       case "bust-first": {
         // Live trigger fires the moment the first bust is observed.
         if (stats?.firstBustAt && bustFirstWinner) {
-          push(canon(c.player) === canon(bustFirstWinner) ? 1 : 2,
+          push(nameMatch(c.player, bustFirstWinner) ? 1 : 2,
             `first bust: ${bustFirstWinner}`);
         } else if (trigger === "end") {
           push(2, "session ended without busts");
@@ -208,7 +271,7 @@ export function computeResolutions(
         if (!stats || biggestPotWinner === null) {
           push(2, "session ended with no resolved pots");
         } else {
-          push(canon(c.player) === canon(biggestPotWinner) ? 1 : 2,
+          push(nameMatch(c.player, biggestPotWinner) ? 1 : 2,
             `biggest pot: ${biggestPotWinner} ($${(stats.players[biggestPotWinner]?.biggestPotWonUsd ?? 0).toLocaleString()})`);
         }
         break;
@@ -218,22 +281,22 @@ export function computeResolutions(
         if (!stats || mostHandsWinner === null) {
           push(2, "session ended with no hands resolved");
         } else {
-          push(canon(c.player) === canon(mostHandsWinner) ? 1 : 2,
+          push(nameMatch(c.player, mostHandsWinner) ? 1 : 2,
             `most hands: ${mostHandsWinner} (${stats.players[mostHandsWinner]?.handsWon ?? 0})`);
         }
         break;
       }
       case "h2h-bluff": {
         if (trigger !== "end") break;
-        const aB = stats?.players[canon(c.a)]?.bluffs ?? 0;
-        const bB = stats?.players[canon(c.b)]?.bluffs ?? 0;
+        const aB = lookupPlayerStats(stats, c.a)?.bluffs ?? 0;
+        const bB = lookupPlayerStats(stats, c.b)?.bluffs ?? 0;
         push(aB > bB ? 1 : 2, `${c.a}=${aB} vs ${c.b}=${bB} bluffs`);
         break;
       }
       case "h2h-pot": {
         if (trigger !== "end") break;
-        const aP = stats?.players[canon(c.a)]?.biggestPotWonUsd ?? 0;
-        const bP = stats?.players[canon(c.b)]?.biggestPotWonUsd ?? 0;
+        const aP = lookupPlayerStats(stats, c.a)?.biggestPotWonUsd ?? 0;
+        const bP = lookupPlayerStats(stats, c.b)?.biggestPotWonUsd ?? 0;
         push(aP > bP ? 1 : 2, `${c.a}=$${aP.toLocaleString()} vs ${c.b}=$${bP.toLocaleString()} pots`);
         break;
       }
