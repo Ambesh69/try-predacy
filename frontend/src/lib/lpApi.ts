@@ -47,6 +47,10 @@ export interface EventDescriptor {
   marketIds?: string[];
   /** Human-readable label per attached market, keyed by marketId hex. */
   marketLabels?: Record<string, string>;
+  /** Final per-market resolution once SettlementEngine has fired
+   *  resolve_market on-chain. Keys are marketId hex, values "YES"/"NO".
+   *  Markets not in this map are still UNRESOLVED. */
+  resolutions?: Record<string, "YES" | "NO">;
 }
 
 export interface PredacyMarketMeta {
@@ -59,6 +63,10 @@ export interface PredacyMarketMeta {
   feeBpsTaker: number;
   feeBpsRebates: number;
   graduated: boolean;
+  /** True once SettlementEngine has resolved the market on-chain. */
+  resolved?: boolean;
+  /** "YES" or "NO" — the winning side. null/undefined while unresolved. */
+  outcome?: "YES" | "NO" | null;
 }
 
 export async function getEvent(handleIdHex: string): Promise<EventDescriptor | null> {

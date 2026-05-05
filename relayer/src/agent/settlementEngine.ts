@@ -299,6 +299,10 @@ export class SettlementEngine {
         const marketIdBuf = Buffer.from(p.marketIdHex.replace(/^0x/, ""), "hex");
         await this.client.resolveMarket(marketIdBuf, p.outcome);
         this.resolved.add(p.marketIdHex);
+        // Mirror the resolution into the EventLedger so the UI can
+        // render badges without fetching the on-chain Market account
+        // for every market on every render.
+        this.ledger.setMarketResolution(handleHex, p.marketIdHex, p.outcome === 1 ? "YES" : "NO");
         console.log(
           `[Settlement] ${trigger} resolved ${p.marketIdHex.slice(0, 8)}… (${p.classified?.kind}) → ${p.outcome === 1 ? "YES" : "NO"} — ${p.reason}`,
         );
@@ -309,6 +313,10 @@ export class SettlementEngine {
         // relayer restart since we don't persist `resolved` yet.
         if (msg.includes("MarketAlreadyResolved") || msg.includes("already resolved")) {
           this.resolved.add(p.marketIdHex);
+          // Also reflect into the ledger so the UI catches up after a
+          // restart — even though we didn't send the tx this round, we
+          // know the outcome from our pure compute.
+          this.ledger.setMarketResolution(handleHex, p.marketIdHex, p.outcome === 1 ? "YES" : "NO");
           continue;
         }
         console.warn(`[Settlement] ${p.marketIdHex.slice(0, 8)}… resolve failed: ${msg.slice(0, 160)}`);

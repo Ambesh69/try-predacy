@@ -514,6 +514,47 @@ export class SolanaClient {
   }
 
   /**
+   * Build an unsigned redeem_outcome transaction the user can sign.
+   * Burns `amount` of the winning side's tokens (YES if outcome=1, NO
+   * if outcome=2) from `userTokenAccount` and transfers the same
+   * amount of USDC from the market vault to `userUsdcAccount`. 1:1
+   * redemption — winning tokens are worth $1 USDC each.
+   *
+   * Caller is responsible for: (a) ensuring market.resolved is true
+   * (otherwise this throws MarketNotResolved on submission), (b)
+   * picking the right token mint based on outcome, (c) the user has
+   * the YES/NO ATA + USDC ATA already created.
+   *
+   * Returns a tx with feePayer=user; user signs + submits.
+   */
+  async buildRedeemOutcomeTx(args: {
+    marketId: Buffer;
+    user: PublicKey;
+    userTokenAccount: PublicKey;  // YES or NO ATA
+    userUsdcAccount: PublicKey;
+    winningMint: PublicKey;       // pass yesMintPda or noMintPda based on market.outcome
+    amount: bigint;               // micro-units of winning tokens (6 decimals)
+  }): Promise<Transaction> {
+    const [market] = this.marketPda(args.marketId);
+    const [usdcVault] = this.usdcVaultPda(args.marketId);
+    const ix = await this.program.methods
+      .redeemOutcome(new anchor.BN(args.amount.toString()))
+      .accounts({
+        market,
+        winningMint: args.winningMint,
+        userTokenAccount: args.userTokenAccount,
+        userUsdcAccount: args.userUsdcAccount,
+        usdcVault,
+        user: args.user,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .instruction();
+    const tx = new Transaction().add(ix);
+    tx.feePayer = args.user;
+    return tx;
+  }
+
+  /**
    * Resolve a market's final outcome (1 = YES wins, 2 = NO wins).
    * Operator-only. Sets market.resolved = true and the winning side
    * so users can call redeem_outcome to swap winning tokens 1:1 for

@@ -58,6 +58,12 @@ export interface EventHandleEntry {
   /** Optional human-readable label per attached market, keyed by marketId hex.
    *  Set by `POST /events/:id/markets` when a label is provided. */
   marketLabels?: Record<string, string>;
+  /** Final resolution per market once SettlementEngine has called
+   *  resolve_market on-chain. "YES" / "NO" matches the on-chain
+   *  Market.outcome (1 = YES, 2 = NO). Used by the UI to render
+   *  resolved badges + the redeem button without fetching every
+   *  Market account on every event-detail page load. */
+  resolutions?: Record<string, "YES" | "NO">;
   /** When this event was first registered (ledger-side). */
   registeredAt: number;
   closed: boolean;
@@ -151,6 +157,29 @@ export class EventLedger {
     if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
     ev.marketIds = [];
     ev.marketLabels = {};
+    this.persist();
+  }
+
+  /** Record a market's final resolution. Called by SettlementEngine
+   *  immediately after resolve_market lands on-chain. The /events
+   *  endpoint surfaces this so the UI can render "RESOLVED · YES/NO"
+   *  badges + the redeem button without re-fetching every Market
+   *  account every render. Idempotent — second call with the same
+   *  outcome is a no-op; with a different outcome warns and ignores
+   *  (the on-chain account is the source of truth, but we shouldn't
+   *  see this case unless someone resolved manually via CLI). */
+  setMarketResolution(handleId: string, marketIdHex: string, outcome: "YES" | "NO"): void {
+    const ev = this.events.get(handleId);
+    if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
+    const key = marketIdHex.toLowerCase().replace(/^0x/, "");
+    const prior = ev.resolutions?.[key];
+    if (prior === outcome) return;
+    if (prior && prior !== outcome) {
+      console.warn(
+        `[EventLedger] Resolution conflict for ${key.slice(0, 8)}…: prior=${prior} new=${outcome} — keeping new (on-chain wins)`,
+      );
+    }
+    ev.resolutions = { ...(ev.resolutions ?? {}), [key]: outcome };
     this.persist();
   }
 

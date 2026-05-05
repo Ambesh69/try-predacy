@@ -1714,6 +1714,7 @@ app.get("/market/:marketIdHex", (req, res) => {
   const marketIdHex = req.params.marketIdHex.toLowerCase().replace("0x", "");
   for (const ev of eventLedger.list()) {
     if (!ev.marketIds.includes(marketIdHex)) continue;
+    const resolution = ev.resolutions?.[marketIdHex] ?? null;
     return res.json({
       marketId: marketIdHex,
       label: ev.marketLabels?.[marketIdHex] ?? null,
@@ -1724,9 +1725,91 @@ app.get("/market/:marketIdHex", (req, res) => {
       feeBpsTaker: ev.feeBpsTaker,
       feeBpsRebates: ev.feeBpsRebates,
       graduated: ev.graduated,
+      resolved: resolution !== null,
+      outcome: resolution,
     });
   }
   return res.status(404).json({ error: "market not found in any event" });
+});
+
+/**
+ * POST /redeem-outcome
+ * Build an unsigned redeem_outcome tx the user can sign + submit.
+ * Burns the user's full balance of winning tokens 1:1 for USDC.
+ *
+ * body: { marketIdHex, user, userUsdcAccount? }
+ *   userUsdcAccount optional — if omitted we derive the standard ATA.
+ *
+ * response: { ok, txBase64, amount, outcome, marketLabel }
+ */
+app.post("/redeem-outcome", async (req, res) => {
+  try {
+    const { marketIdHex, user, userUsdcAccount } = req.body || {};
+    if (!marketIdHex || !user) {
+      return res.status(400).json({ error: "marketIdHex + user required" });
+    }
+    const marketIdHexNorm = String(marketIdHex).toLowerCase().replace(/^0x/, "");
+    const evMatch = eventLedger.list().find((ev) => ev.marketIds.includes(marketIdHexNorm));
+    if (!evMatch) return res.status(404).json({ error: "market not found in any event" });
+    const outcome = evMatch.resolutions?.[marketIdHexNorm];
+    if (!outcome) return res.status(409).json({ error: "market not resolved yet" });
+
+    const userKey = new PublicKey(user);
+    const marketIdBuf = Buffer.from(marketIdHexNorm, "hex");
+    const winningMint = (outcome === "YES"
+      ? client.yesMintPda(marketIdBuf)
+      : client.noMintPda(marketIdBuf))[0];
+
+    const { getAssociatedTokenAddressSync, getAccount } = await import("@solana/spl-token");
+    const userTokenAccount = getAssociatedTokenAddressSync(winningMint, userKey, true);
+
+    // Fetch the user's winning-side token balance — that's the amount we'll redeem.
+    let amount: bigint = 0n;
+    try {
+      const acc = await getAccount(client.getConnection(), userTokenAccount);
+      amount = BigInt(acc.amount.toString());
+    } catch {
+      return res.status(404).json({ error: `no ${outcome} tokens held by user for this market` });
+    }
+    if (amount === 0n) {
+      return res.status(404).json({ error: `${outcome} token balance is zero — nothing to redeem` });
+    }
+
+    let usdcAta: PublicKey;
+    if (userUsdcAccount) {
+      usdcAta = new PublicKey(userUsdcAccount);
+    } else {
+      const protocolCfg = await client.fetchProtocolConfig();
+      const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+      usdcAta = getAssociatedTokenAddressSync(usdcMint, userKey, true);
+    }
+
+    const tx = await client.buildRedeemOutcomeTx({
+      marketId: marketIdBuf,
+      user: userKey,
+      userTokenAccount,
+      userUsdcAccount: usdcAta,
+      winningMint,
+      amount,
+    });
+
+    const { blockhash } = await client.getConnection().getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    const txBase64 = tx
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64");
+
+    res.json({
+      ok: true,
+      txBase64,
+      amount: amount.toString(),
+      outcome,
+      marketLabel: evMatch.marketLabels?.[marketIdHexNorm] ?? null,
+    });
+  } catch (err: any) {
+    console.error("[POST /redeem-outcome] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /**

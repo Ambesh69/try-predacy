@@ -12,6 +12,10 @@ import {
 } from "@/lib/lpApi";
 import { OrderForm } from "@/components/OrderForm";
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
+// RedeemActionButton uses Privy hooks unconditionally — load via dynamic
+// import with ssr:false so a server render under a Privy-less env
+// doesn't crash. The PrivyGated wrapper still guards the env-var case.
+const RedeemActionButton = dynamic(() => import("@/components/RedeemActionButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 
 interface Props {
@@ -151,7 +155,12 @@ function FeaturedAndRest({ event }: { event: EventDescriptor }) {
               {binaries.length > 0 && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {binaries.map(({ market }) => (
-                    <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
+                    <MarketCard
+                      key={market.marketId}
+                      marketId={market.marketId}
+                      label={market.label}
+                      resolution={event.resolutions?.[market.marketId] ?? null}
+                    />
                   ))}
                 </div>
               )}
@@ -419,6 +428,7 @@ function FeaturedMultiOutcome({
   const uniformPct = 100 / n;
   const yesPrice = uniformPct / 100;
   const noPrice = 1 - yesPrice;
+  const selectedOutcome = event.resolutions?.[selected.marketId] ?? null;
 
   return (
     <section className="border border-card-border bg-card-elevated">
@@ -441,19 +451,27 @@ function FeaturedMultiOutcome({
         </div>
       </div>
 
-      {/* Selected-outcome status line — matches image 3's "SELECTED X · Y% chance · YES Z¢ NO W¢" */}
+      {/* Selected-outcome status line — matches image 3's "SELECTED X · Y% chance · YES Z¢ NO W¢"
+          When resolved, swap the price/chance pills for a "RESOLVED · YES/NO" badge so the user
+          immediately sees the final outcome. */}
       <div className="px-5 py-3 border-b border-card-border flex items-center gap-3 flex-wrap text-[11px]">
         <span className="text-muted tracking-widest uppercase">Selected</span>
         <span className="text-text font-mono font-bold">{selected.player}</span>
         <span className="text-muted-dim">·</span>
-        <span className="text-accent tabular-nums">{Math.round(uniformPct)}% chance</span>
-        <span className="text-muted-dim">·</span>
-        <span className="tabular-nums" style={{ color: "#52F0D3" }}>
-          YES {Math.round(uniformPct)}¢
-        </span>
-        <span className="tabular-nums" style={{ color: "#FF7683" }}>
-          NO {100 - Math.round(uniformPct)}¢
-        </span>
+        {selectedOutcome ? (
+          <ResolutionBadge outcome={selectedOutcome} prominent />
+        ) : (
+          <>
+            <span className="text-accent tabular-nums">{Math.round(uniformPct)}% chance</span>
+            <span className="text-muted-dim">·</span>
+            <span className="tabular-nums" style={{ color: "#52F0D3" }}>
+              YES {Math.round(uniformPct)}¢
+            </span>
+            <span className="tabular-nums" style={{ color: "#FF7683" }}>
+              NO {100 - Math.round(uniformPct)}¢
+            </span>
+          </>
+        )}
       </div>
 
       <div className="grid lg:grid-cols-[1fr_360px]">
@@ -471,24 +489,108 @@ function FeaturedMultiOutcome({
         </div>
 
         {/* Right column — sealed-bid order panel scoped to the selected
-            outcome's binary market. OrderForm handles its own state but
+            outcome's binary market. Once the market is resolved, swap
+            in the redeem panel: any holders of the winning side can
+            burn 1:1 for USDC. OrderForm handles its own state but
             requires Privy context (no-ops gracefully when not
             configured, e.g. local dev without NEXT_PUBLIC_PRIVY_APP_ID). */}
         <aside className="p-5 bg-card">
-          <PrivyGatedOrderForm
-            // Re-mount on outcome switch so OrderForm's internal phase
-            // state resets cleanly (otherwise a partially-prepared order
-            // would carry across the outcome change).
-            key={selected.marketId}
-            marketId={selected.marketId}
-            marketQuestion={`Will ${selected.player} ${humanLabelFor(group.templateKey)}?`}
-            yesPrice={yesPrice}
-            noPrice={noPrice}
-          />
+          {selectedOutcome ? (
+            <RedeemPanel
+              key={selected.marketId}
+              marketId={selected.marketId}
+              marketLabel={`Will ${selected.player} ${humanLabelFor(group.templateKey)}?`}
+              outcome={selectedOutcome}
+            />
+          ) : (
+            <PrivyGatedOrderForm
+              // Re-mount on outcome switch so OrderForm's internal phase
+              // state resets cleanly (otherwise a partially-prepared
+              // order would carry across the outcome change).
+              key={selected.marketId}
+              marketId={selected.marketId}
+              marketQuestion={`Will ${selected.player} ${humanLabelFor(group.templateKey)}?`}
+              yesPrice={yesPrice}
+              noPrice={noPrice}
+            />
+          )}
         </aside>
       </div>
     </section>
   );
+}
+
+/** Compact "RESOLVED · YES/NO" badge with green/red coloring matching
+ *  the YES/NO pills used elsewhere on the page. Set `prominent` for the
+ *  large status-line variant. */
+function ResolutionBadge({
+  outcome,
+  prominent = false,
+}: {
+  outcome: "YES" | "NO";
+  prominent?: boolean;
+}) {
+  const isYes = outcome === "YES";
+  const color = isYes ? "#52F0D3" : "#FF7683";
+  const bg = isYes ? "#2CE8C612" : "#FF5F6D12";
+  const border = isYes ? "#2CE8C655" : "#FF5F6D55";
+  return (
+    <span
+      className={clsx(
+        "inline-flex items-center gap-1.5 border font-mono tabular-nums tracking-widest uppercase",
+        prominent ? "text-[11px] px-2 py-0.5" : "text-[10px] px-1.5 py-0.5",
+      )}
+      style={{ color, background: bg, borderColor: border }}
+    >
+      <span className="w-1 h-1 rounded-full inline-block" style={{ background: color }} />
+      Resolved · {outcome}
+    </span>
+  );
+}
+
+/** Resolved-market panel that replaces OrderForm in the featured block.
+ *  Hits /redeem-outcome to discover the user's winning-token balance,
+ *  then signs + submits the redeem tx via Privy. Falls back to a
+ *  graceful "no winning tokens" state for users who didn't bet (or bet
+ *  the losing side). Keeps the same visual rhythm as OrderForm so the
+ *  layout doesn't reflow when a market resolves. */
+function RedeemPanel({
+  marketId,
+  marketLabel,
+  outcome,
+}: {
+  marketId: string;
+  marketLabel: string;
+  outcome: "YES" | "NO";
+}) {
+  return (
+    <div className="text-[11px] text-muted leading-snug space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] tracking-widest uppercase text-accent">Market resolved</p>
+        <ResolutionBadge outcome={outcome} prominent />
+      </div>
+      <p className="text-[12px] text-text leading-snug">{marketLabel}</p>
+      <p className="text-muted-dim">
+        Winning side: <span className="font-mono" style={{ color: outcome === "YES" ? "#52F0D3" : "#FF7683" }}>{outcome}</span>
+        . Holders of {outcome} tokens can redeem them 1:1 for USDC.
+      </p>
+      <RedeemButton marketId={marketId} outcome={outcome} />
+    </div>
+  );
+}
+
+function RedeemButton({ marketId, outcome }: { marketId: string; outcome: "YES" | "NO" }) {
+  const privyConfigured = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  if (!privyConfigured) {
+    return (
+      <p className="text-[10px] text-muted-dim italic">
+        Connect a wallet to redeem winning {outcome} tokens.
+      </p>
+    );
+  }
+  // The actual redeem flow needs Privy hooks; deferred to a Privy-only
+  // component so this file doesn't crash when Privy isn't configured.
+  return <RedeemActionButton marketId={marketId} outcome={outcome} />;
 }
 
 /** Wraps OrderForm so it only renders when Privy is configured. Without
@@ -651,6 +753,15 @@ function PolymarketCard({
   const closesIn = event.closesAt - Math.floor(Date.now() / 1000);
   const closesLabel = closesIn <= 0 ? "Closed" : `Closes ${relativeTime(event.closesAt)}`;
 
+  // A multi-outcome group counts as resolved when every outcome has
+  // a resolution recorded. Pre-resolution groups behave normally;
+  // mid-resolution (some outcomes resolved, others not) is rare since
+  // SettlementEngine fires the whole group together but we still
+  // handle it gracefully.
+  const resolutions = event.resolutions ?? {};
+  const allResolved = group.outcomes.every((o) => resolutions[o.marketId]);
+  const winner = group.outcomes.find((o) => resolutions[o.marketId] === "YES");
+
   return (
     <button
       type="button"
@@ -661,28 +772,48 @@ function PolymarketCard({
         <span className="text-[10px] tracking-widest uppercase border border-border-bright text-muted px-2 py-0.5">
           {tag}
         </span>
-        <span className="text-[10px] text-muted-dim tabular-nums shrink-0 mt-0.5">
-          {closesLabel}
-        </span>
+        {allResolved ? (
+          <ResolutionBadge outcome={winner ? "YES" : "NO"} />
+        ) : (
+          <span className="text-[10px] text-muted-dim tabular-nums shrink-0 mt-0.5">
+            {closesLabel}
+          </span>
+        )}
       </div>
 
       <h3 className="text-[15px] text-text leading-snug font-bold">{group.title}</h3>
 
       <div className="flex flex-col gap-1.5">
-        {previewOutcomes.map(({ marketId, player }) => (
-          <div key={marketId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-[12px]">
-            <span className="text-text font-mono truncate">{player}</span>
-            <div className="w-[80px] h-[2px] bg-border rounded-full overflow-hidden">
-              <div
-                className="h-full"
-                style={{ width: `${Math.max(2, uniformPct)}%`, background: "#4EA3FF" }}
-              />
+        {previewOutcomes.map(({ marketId, player }) => {
+          const r = resolutions[marketId];
+          return (
+            <div key={marketId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-[12px]">
+              <span className={clsx(
+                "font-mono truncate",
+                r === "YES" ? "text-text font-bold" : r === "NO" ? "text-muted-dim line-through" : "text-text",
+              )}>
+                {player}
+              </span>
+              {r ? (
+                <span className="col-span-2 justify-self-end">
+                  <ResolutionBadge outcome={r} />
+                </span>
+              ) : (
+                <>
+                  <div className="w-[80px] h-[2px] bg-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full"
+                      style={{ width: `${Math.max(2, uniformPct)}%`, background: "#4EA3FF" }}
+                    />
+                  </div>
+                  <span className="tabular-nums w-[36px] text-right font-bold" style={{ color: "#4EA3FF" }}>
+                    {pctRounded}%
+                  </span>
+                </>
+              )}
             </div>
-            <span className="tabular-nums w-[36px] text-right font-bold" style={{ color: "#4EA3FF" }}>
-              {pctRounded}%
-            </span>
-          </div>
-        ))}
+          );
+        })}
         {moreCount > 0 && (
           <p className="text-[10px] text-muted-dim mt-0.5">
             +{moreCount} more outcome{moreCount === 1 ? "" : "s"}
@@ -720,37 +851,63 @@ function LockIcon() {
   );
 }
 
-function MarketCard({ marketId, label }: { marketId: string; label?: string }) {
+function MarketCard({
+  marketId,
+  label,
+  resolution = null,
+}: {
+  marketId: string;
+  label?: string;
+  resolution?: "YES" | "NO" | null;
+}) {
   // Predacy-native markets default to a 50/50 prior — the actual price
   // emerges from the first sealed-bid batch, not from a Polymarket lookup.
   const display = label ?? `Market ${marketId.slice(0, 8)}…`;
+  const yesColor = resolution === "YES" ? "#52F0D3" : "#4EA3FF";
 
   return (
     <Link href={`/market/predacy/${marketId}`} className="block">
       <div className="border border-card-border bg-card p-4 hover:border-border-bright transition-colors flex flex-col gap-3 cursor-crosshair h-full">
-        <h3 className="text-[13px] text-text leading-snug line-clamp-3">
-          {display}
-        </h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="text-[13px] text-text leading-snug line-clamp-3 flex-1">
+            {display}
+          </h3>
+          {resolution && (
+            <div className="shrink-0">
+              <ResolutionBadge outcome={resolution} />
+            </div>
+          )}
+        </div>
         <div className="flex items-end justify-between gap-3">
           <div className="flex items-baseline gap-1">
             <span
               className="text-2xl font-black tabular-nums leading-none"
-              style={{ fontFamily: "var(--font-display)", color: "#4EA3FF" }}
+              style={{ fontFamily: "var(--font-display)", color: yesColor }}
             >
-              50%
+              {resolution === "YES" ? "100%" : resolution === "NO" ? "0%" : "50%"}
             </span>
-            <span className="text-[9px] text-muted tracking-widest uppercase">implied</span>
+            <span className="text-[9px] text-muted tracking-widest uppercase">
+              {resolution ? "final" : "implied"}
+            </span>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}>YES 50¢</span>
-            <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}>NO 50¢</span>
-          </div>
+          {!resolution && (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}>YES 50¢</span>
+              <span className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums" style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}>NO 50¢</span>
+            </div>
+          )}
         </div>
         <div className="h-[2px] bg-border rounded-full overflow-hidden">
-          <div className="h-full transition-all duration-500" style={{ width: "50%", background: "#4EA3FF" }} />
+          <div
+            className="h-full transition-all duration-500"
+            style={{
+              width: resolution === "YES" ? "100%" : resolution === "NO" ? "0%" : "50%",
+              background: yesColor,
+            }}
+          />
         </div>
         <div className="text-[10px] text-muted-dim tracking-widest uppercase">
-          Place sealed bid →
+          {resolution ? `Final · ${resolution}` : "Place sealed bid →"}
         </div>
       </div>
     </Link>
