@@ -109,15 +109,20 @@ export default function PredacyEventDetail({ params }: Props) {
 
 function FeaturedAndRest({ event }: { event: EventDescriptor }) {
   const groups = groupMarkets(event);
-  // Promote the canonical "most_hands" group to the featured slot when
-  // present — most universally interesting across both Triton (cash
-  // game) and HCL (streamer showdown). Falls back to the first multi-
-  // outcome group if most_hands isn't available, then to nothing if
-  // the event only has binaries.
-  const featured =
-    groups.find((g): g is MultiOutcomeGroup => g.kind === "multi" && g.templateKey === "most_hands")
-    ?? groups.find((g): g is MultiOutcomeGroup => g.kind === "multi");
-  const restGroups = groups.filter((g) => g !== featured);
+  const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
+  const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
+
+  // Default the featured slot to "most_hands" (universally interesting
+  // across Triton and HCL), falling back to the first multi-outcome
+  // group. Clicking another polymarket-style card below swaps it into
+  // the featured slot — keeps the page on a single URL and lets users
+  // browse markets without losing context.
+  const defaultKey =
+    multis.find((g) => g.templateKey === "most_hands")?.templateKey
+    ?? multis[0]?.templateKey;
+  const [featuredKey, setFeaturedKey] = useState<string | undefined>(defaultKey);
+  const featured = multis.find((g) => g.templateKey === featuredKey) ?? multis[0];
+  const restMultis = multis.filter((g) => g !== featured);
 
   return (
     <>
@@ -125,37 +130,37 @@ function FeaturedAndRest({ event }: { event: EventDescriptor }) {
       <section className="grid lg:grid-cols-[1fr_320px] gap-6">
         <div className="space-y-4">
           <SectionHeader>
-            More markets <span className="text-muted-dim ml-1">({restGroups.length})</span>
+            More markets <span className="text-muted-dim ml-1">({restMultis.length + binaries.length})</span>
           </SectionHeader>
-          <RestOfMarkets groups={restGroups} />
+          {restMultis.length === 0 && binaries.length === 0 ? (
+            <p className="text-[11px] text-muted-dim italic">All markets surfaced above.</p>
+          ) : (
+            <div className="space-y-3">
+              {restMultis.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {restMultis.map((g) => (
+                    <PolymarketCard
+                      key={`m-${g.templateKey}`}
+                      group={g}
+                      event={event}
+                      onClick={() => setFeaturedKey(g.templateKey)}
+                    />
+                  ))}
+                </div>
+              )}
+              {binaries.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {binaries.map(({ market }) => (
+                    <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <EventSidebar event={event} />
       </section>
     </>
-  );
-}
-
-function RestOfMarkets({ groups }: { groups: Group[] }) {
-  const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
-  const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
-  if (multis.length === 0 && binaries.length === 0) {
-    return (
-      <p className="text-[11px] text-muted-dim italic">All markets surfaced above.</p>
-    );
-  }
-  return (
-    <div className="space-y-3">
-      {multis.map((g) => (
-        <MultiOutcomeMarket key={`m-${g.templateKey}`} group={g} />
-      ))}
-      {binaries.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {binaries.map(({ market }) => (
-            <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -620,81 +625,98 @@ function FeaturedOutcomeList({
   );
 }
 
-function MultiOutcomeMarket({ group }: { group: MultiOutcomeGroup }) {
-  const [expanded, setExpanded] = useState(false);
+/* ── Polymarket-style "more markets" card ────────────────────────────
+ *
+ *  Matches image 1's polymarket index card: tag top-left + ends date
+ *  top-right, title, top 4 outcomes with bar + % rows, "+N more
+ *  outcomes" summary, $vol + DARK POOL footer. Click swaps the card
+ *  into the featured slot above (handled by the parent — no route
+ *  change). */
+function PolymarketCard({
+  group,
+  event,
+  onClick,
+}: {
+  group: MultiOutcomeGroup;
+  event: EventDescriptor;
+  onClick: () => void;
+}) {
   const n = group.outcomes.length;
-  // Predacy-native markets default to 50/50 priors — actual prices
-  // emerge from the first sealed-bid batch. We display a uniform prior
-  // (1/N) across outcomes until live price data lands.
   const uniformPct = 100 / n;
-  const VISIBLE_DEFAULT = 4;
-  const visible = expanded ? group.outcomes : group.outcomes.slice(0, VISIBLE_DEFAULT);
-  const hiddenCount = n - VISIBLE_DEFAULT;
+  const pctRounded = Math.round(uniformPct);
+  const VISIBLE = 4;
+  const previewOutcomes = group.outcomes.slice(0, VISIBLE);
+  const moreCount = Math.max(0, n - VISIBLE);
+  const tag = templateTag(group.templateKey);
+  const closesIn = event.closesAt - Math.floor(Date.now() / 1000);
+  const closesLabel = closesIn <= 0 ? "Closed" : `Closes ${relativeTime(event.closesAt)}`;
 
   return (
-    <div className="border border-card-border bg-card p-5 flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-[15px] text-text leading-snug font-bold">{group.title}</h3>
-        <span className="text-[10px] text-muted-dim tabular-nums shrink-0 mt-1">
-          {n} outcomes
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-left border border-card-border bg-card hover:border-border-bright transition-colors p-5 flex flex-col gap-3 h-full cursor-pointer"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-[10px] tracking-widest uppercase border border-border-bright text-muted px-2 py-0.5">
+          {tag}
+        </span>
+        <span className="text-[10px] text-muted-dim tabular-nums shrink-0 mt-0.5">
+          {closesLabel}
         </span>
       </div>
-      <div className="flex flex-col">
-        {visible.map(({ marketId, player }) => (
-          <OutcomeRow
-            key={marketId}
-            marketId={marketId}
-            player={player}
-            pct={uniformPct}
-          />
+
+      <h3 className="text-[15px] text-text leading-snug font-bold">{group.title}</h3>
+
+      <div className="flex flex-col gap-1.5">
+        {previewOutcomes.map(({ marketId, player }) => (
+          <div key={marketId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-[12px]">
+            <span className="text-text font-mono truncate">{player}</span>
+            <div className="w-[80px] h-[2px] bg-border rounded-full overflow-hidden">
+              <div
+                className="h-full"
+                style={{ width: `${Math.max(2, uniformPct)}%`, background: "#4EA3FF" }}
+              />
+            </div>
+            <span className="tabular-nums w-[36px] text-right font-bold" style={{ color: "#4EA3FF" }}>
+              {pctRounded}%
+            </span>
+          </div>
         ))}
+        {moreCount > 0 && (
+          <p className="text-[10px] text-muted-dim mt-0.5">
+            +{moreCount} more outcome{moreCount === 1 ? "" : "s"}
+          </p>
+        )}
       </div>
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setExpanded((e) => !e)}
-          className="text-[11px] text-muted-dim hover:text-accent transition-colors text-left tracking-wider"
-        >
-          {expanded ? "show less" : `+${hiddenCount} more outcome${hiddenCount === 1 ? "" : "s"}`}
-        </button>
-      )}
-    </div>
+
+      <div className="flex items-center justify-between mt-auto pt-2">
+        <span className="text-[11px] text-muted tabular-nums">
+          ${formatUsdc6(event.cumulativeVolumeUsdc, 0)} vol
+        </span>
+        <span className="flex items-center gap-1 text-[10px] text-muted-dim tracking-widest uppercase">
+          <LockIcon /> Dark Pool
+        </span>
+      </div>
+    </button>
   );
 }
 
-function OutcomeRow({
-  marketId,
-  player,
-  pct,
-}: {
-  marketId: string;
-  player: string;
-  pct: number;
-}) {
-  const pctRounded = Math.round(pct);
-  // Bar tint biased to red→amber→green by likelihood, like image 2.
-  const barColor =
-    pct < 10 ? "#FF5F6D" : pct < 25 ? "#F7B500" : pct < 50 ? "#4EA3FF" : "#2CE8C6";
-  const pctColor =
-    pct < 10 ? "#FF7683" : pct < 25 ? "#F7B500" : pct < 50 ? "#4EA3FF" : "#52F0D3";
+function templateTag(key: MultiOutcomeGroup["templateKey"]): string {
+  switch (key) {
+    case "bluff_most":  return "BLUFFS";
+    case "bust_first":  return "BUST FIRST";
+    case "biggest_pot": return "BIGGEST POT";
+    case "most_hands":  return "HANDS WON";
+  }
+}
+
+function LockIcon() {
   return (
-    <Link
-      href={`/market/predacy/${marketId}`}
-      className="grid grid-cols-[1fr_auto_auto] items-center gap-4 py-1.5 group"
-    >
-      <span className="text-[13px] text-text font-mono group-hover:text-accent transition-colors truncate">
-        {player}
-      </span>
-      <div className="w-[160px] h-[3px] bg-border rounded-full overflow-hidden">
-        <div
-          className="h-full transition-all duration-500"
-          style={{ width: `${Math.max(2, pct)}%`, background: barColor }}
-        />
-      </div>
-      <span className="text-[13px] tabular-nums font-bold w-[40px] text-right" style={{ color: pctColor }}>
-        {pctRounded}%
-      </span>
-    </Link>
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
   );
 }
 
