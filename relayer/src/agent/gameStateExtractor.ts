@@ -186,7 +186,10 @@ Rules:
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`);
+      // Collapse whitespace so the multi-line JSON body doesn't span
+      // multiple Railway log lines on every quota / rate-limit hit.
+      const oneLine = body.slice(0, 200).replace(/\s+/g, " ").trim();
+      throw new Error(`OpenAI ${res.status}: ${oneLine}`);
     }
 
     const data = await res.json() as any;

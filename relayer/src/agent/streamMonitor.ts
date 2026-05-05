@@ -932,10 +932,11 @@ function isObviousPlaceholder(name: string): boolean {
   const trimmed = name.trim();
   if (trimmed.length < 2) return true;
   if (/^[0-9$,.]+$/.test(trimmed)) return true;
+  if (/^(player|seat|p)\s*\d{1,2}$/i.test(trimmed)) return true;
   const lower = trimmed.toLowerCase();
   return new Set([
     "player name", "player", "name",
-    "seat 1", "seat 2", "n/a", "unknown", "tbd", "dealer", "host",
+    "n/a", "unknown", "tbd", "dealer", "host",
   ]).has(lower);
 }
 

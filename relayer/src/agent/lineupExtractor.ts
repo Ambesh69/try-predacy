@@ -309,7 +309,10 @@ Rules:
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`);
+      // Collapse whitespace so the multi-line JSON body doesn't span
+      // multiple Railway log lines on every quota / rate-limit hit.
+      const oneLine = body.slice(0, 200).replace(/\s+/g, " ").trim();
+      throw new Error(`OpenAI ${res.status}: ${oneLine}`);
     }
 
     const data = await res.json() as any;
@@ -350,20 +353,24 @@ function canonicalNameKey(name: string): string {
 }
 
 /** Reject obvious garbage that the model occasionally returns: literal
- *  echoes of the prompt's example ("Player Name"), single-character
- *  reads, or all-digit strings (which are usually chip stacks misread
- *  as nameplates). Real broadcast nameplates are >= 2 letters. */
+ *  echoes of the prompt's example ("Player Name"), generic seat
+ *  numbering ("Player 1", "Seat 5"), single-character reads, or
+ *  all-digit strings (chip stacks misread as nameplates). Real
+ *  broadcast nameplates are >= 2 letters and never just "Player N". */
 function isPlaceholderName(name: string): boolean {
   const trimmed = name.trim();
   if (trimmed.length < 2) return true;
   if (/^[0-9$,.]+$/.test(trimmed)) return true;
+  // Generic seat numbering — Player 1..N, Seat 1..N, P1..PN. The N
+  // is allowed up to 12 (max realistic table) so we don't accidentally
+  // flag rare names like "Player 23". Anchored so "Mr. Player 1" still
+  // passes if it ever occurs.
+  if (/^(player|seat|p)\s*\d{1,2}$/i.test(trimmed)) return true;
   const lower = trimmed.toLowerCase();
   const placeholders = new Set([
     "player name",
     "player",
     "name",
-    "seat 1",
-    "seat 2",
     "n/a",
     "unknown",
     "tbd",
