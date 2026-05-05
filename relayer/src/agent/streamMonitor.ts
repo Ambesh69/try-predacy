@@ -85,7 +85,13 @@ interface ActiveSession {
 
 interface SessionStore {
   schemaVersion: 2;
-  /** Keyed by lineup hash (the session identity), not videoId. */
+  /** Keyed by handleIdHex — the on-chain EventHandle id, immutable for
+   *  the lifetime of a session. Lineup hash mutates as new entrants are
+   *  added; keying by it caused the per-session game-state loop to bail
+   *  silently every time the lineup grew, leaving stats frozen. The
+   *  "same lineup on different videoId" lookup that used to hit
+   *  active[hash] now scans values for sessions whose CURRENT
+   *  lineupHash matches (see findActiveByLineupHash). */
   active: Record<string, ActiveSession>;
   lastPollAt: number;
 }
@@ -205,24 +211,31 @@ export class StreamMonitor {
 
   private startGameStateLoop(sess: ActiveSession): void {
     if (!this.gameState.enabled) return;
-    if (this.gameStateTimers.has(sess.lineupHash)) return; // already running
+    if (this.gameStateTimers.has(sess.handleIdHex)) return; // already running
     console.log(`[StreamMonitor] ${sess.channelTag} starting game-state loop for ${sess.sessionLabel}`);
+    // Eagerly create the stats record so the UI panel renders immediately
+    // for new sessions, even before the first OCR snapshot lands. Without
+    // this, /agent/stats?handleId=… returns 404 for the first ~5s and the
+    // panel decides "no stats for that session" and stays hidden.
+    this.stats.ensureSession(sess.sessionLabel, sess.handleIdHex);
     this.scheduleGameStateTick(sess, 1000); // first tick fast
   }
 
-  private stopGameStateLoop(lineupHash: string): void {
-    const t = this.gameStateTimers.get(lineupHash);
+  private stopGameStateLoop(handleIdHex: string): void {
+    const t = this.gameStateTimers.get(handleIdHex);
     if (t) {
       clearTimeout(t);
-      this.gameStateTimers.delete(lineupHash);
+      this.gameStateTimers.delete(handleIdHex);
     }
   }
 
   private scheduleGameStateTick(sess: ActiveSession, delayMs: number): void {
     const handle = setTimeout(async () => {
-      // Bail if the session was ended while we were sleeping.
-      if (!this.state.active[sess.lineupHash]) {
-        this.gameStateTimers.delete(sess.lineupHash);
+      // Bail if the session was ended while we were sleeping. Keyed by
+      // handleIdHex (immutable) so this check stays correct even after
+      // the lineup mutates and lineupHash changes.
+      if (!this.state.active[sess.handleIdHex]) {
+        this.gameStateTimers.delete(sess.handleIdHex);
         return;
       }
       try {
@@ -234,14 +247,14 @@ export class StreamMonitor {
         // Errors are already logged inside the extractor; just keep ticking.
       } finally {
         // Re-read in case another path mutated active map mid-tick.
-        if (this.state.active[sess.lineupHash]) {
+        if (this.state.active[sess.handleIdHex]) {
           this.scheduleGameStateTick(sess, GAME_STATE_INTERVAL_MS);
         } else {
-          this.gameStateTimers.delete(sess.lineupHash);
+          this.gameStateTimers.delete(sess.handleIdHex);
         }
       }
     }, delayMs);
-    this.gameStateTimers.set(sess.lineupHash, handle);
+    this.gameStateTimers.set(sess.handleIdHex, handle);
   }
 
   /** Currently-active session for a channel, if any. Used by downstream
@@ -337,7 +350,7 @@ export class StreamMonitor {
         lastSeenAt: now,
         lastLineupCheckAt: now,
       };
-      this.state.active[session.lineupHash] = session;
+      this.state.active[session.handleIdHex] = session;
       reconstructed = true;
       this.startGameStateLoop(session);
       console.log(
@@ -627,7 +640,9 @@ export class StreamMonitor {
 
     // Does this lineup match an already-active session? (Stream restart
     // mid-game is the classic case — different videoId, same players.)
-    const existing = this.state.active[lineup.hash];
+    // Active map is keyed by handleIdHex; scan values for a current
+    // lineupHash match. Map is bounded to ~one session per channel.
+    const existing = Object.values(this.state.active).find((s) => s.lineupHash === lineup.hash);
     if (existing) {
       console.log(`[StreamMonitor] ${ch.tag} session ${existing.sessionLabel} continues on new video ${v.videoId}`);
       existing.videoId = v.videoId;
@@ -741,7 +756,7 @@ export class StreamMonitor {
       lastSeenAt: now,
       lastLineupCheckAt: now,
     };
-    this.state.active[lineup.hash] = session;
+    this.state.active[created.handleIdHex] = session;
 
     // Seed generic markets first so the cards show up fast — these don't
     // depend on the lineup. Player-aware markets follow.
@@ -774,8 +789,8 @@ export class StreamMonitor {
    *  up); LP capital auto-refunds at closesAt regardless. */
   private endSession(session: ActiveSession, reason: string): void {
     console.log(`[StreamMonitor] ${session.channelTag} ending session ${session.sessionLabel}: ${reason}`);
-    this.stopGameStateLoop(session.lineupHash);
-    delete this.state.active[session.lineupHash];
+    this.stopGameStateLoop(session.handleIdHex);
+    delete this.state.active[session.handleIdHex];
     // TODO(day-5): emit settlement-pending event for the settlement engine
     // to pick up. Stats for this session live in this.stats.get(label).
   }
@@ -787,8 +802,28 @@ export class StreamMonitor {
       if (fs.existsSync(this.storePath)) {
         const raw = fs.readFileSync(this.storePath, "utf-8");
         const parsed = JSON.parse(raw) as Partial<SessionStore>;
-        if (parsed.schemaVersion === 2) {
-          return parsed as SessionStore;
+        if (parsed.schemaVersion === 2 && parsed.active) {
+          // Migration: older v2 writes keyed `active` by lineupHash; the
+          // current code keys by handleIdHex (immutable). Re-key in
+          // place so callers operating against handleIdHex don't see
+          // empty results for sessions persisted under their lineup
+          // hash. Idempotent — sessions already keyed by handleIdHex
+          // map to themselves.
+          const rekeyed: Record<string, ActiveSession> = {};
+          for (const [key, sess] of Object.entries(parsed.active)) {
+            const targetKey = sess.handleIdHex;
+            if (!targetKey) continue;
+            if (rekeyed[targetKey]) continue; // dedupe if both keys present
+            rekeyed[targetKey] = sess;
+            if (key !== targetKey) {
+              console.log(`[StreamMonitor] migrated session ${sess.sessionLabel} key ${key.slice(0,8)}… → ${targetKey.slice(0,8)}…`);
+            }
+          }
+          return {
+            schemaVersion: 2,
+            active: rekeyed,
+            lastPollAt: parsed.lastPollAt ?? 0,
+          };
         }
         // v1 store (videoId-keyed) — not migratable. Start fresh; the
         // poller will re-discover any active sessions on next tick.

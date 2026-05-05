@@ -93,8 +93,13 @@ export default function PredacyEventDetail({ params }: Props) {
       <main className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-[1fr_320px] gap-6">
         <div className="space-y-4">
           {/* Agent's live read of the table — only renders for agent-
-              managed sessions (manually-seeded events have no stats). */}
-          <LiveStandingsPanel handleIdHex={event.handleId} />
+              managed sessions (manually-seeded events have no stats).
+              Pass the full lineup so all players show up even before
+              the gameState OCR has attributed any action to them. */}
+          <LiveStandingsPanel
+            handleIdHex={event.handleId}
+            lineup={lineupFromMarketLabels(event.marketLabels)}
+          />
 
           <SectionHeader>
             Markets <span className="text-muted-dim ml-1">({event.marketIds?.length ?? 0})</span>
@@ -238,6 +243,35 @@ function ParamRow({
       {hint && <p className="text-[9px] text-muted-dim mt-0.5 leading-snug">{hint}</p>}
     </div>
   );
+}
+
+/** Pull unique player names out of an event's marketLabels by reversing
+ *  the player-template patterns. Used by the LiveStandingsPanel so it
+ *  can render rows for every known player even before the gameState
+ *  OCR has attributed any action to them. */
+function lineupFromMarketLabels(labels: Record<string, string> | undefined): string[] {
+  if (!labels) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const PATTERNS = [
+    /^Will (.+?) bluff the most this session\?$/,
+    /^Will (.+?) bust first\?$/,
+    /^Will (.+?) win the biggest pot tonight\?$/,
+    /^Will (.+?) win the most hands tonight\?$/,
+  ];
+  for (const lbl of Object.values(labels)) {
+    for (const rx of PATTERNS) {
+      const m = lbl.match(rx);
+      if (!m) continue;
+      const name = m[1].trim();
+      const key = name.toLowerCase();
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push(name);
+      break;
+    }
+  }
+  return out;
 }
 
 /* ── Multi-outcome grouping ──────────────────────────────────────────
