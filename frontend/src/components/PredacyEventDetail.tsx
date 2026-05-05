@@ -116,19 +116,13 @@ function FeaturedAndRest({ event }: { event: EventDescriptor }) {
   const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
   const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
 
-  // Default the featured slot:
-  //   1. Newest active hand-winner group (live trading, fastest cadence)
-  //   2. Otherwise "most_hands" (universally interesting across Triton + HCL)
-  //   3. Otherwise first multi-outcome group
-  // Clicking another polymarket-style card below swaps it into the
-  // featured slot — keeps the page on a single URL and lets users
+  // Default the featured slot to "most_hands" (universally interesting
+  // across Triton and HCL), falling back to the first multi-outcome
+  // group. Clicking another polymarket-style card below swaps it into
+  // the featured slot — keeps the page on a single URL and lets users
   // browse markets without losing context.
-  const newestHand = multis
-    .filter((g): g is MultiOutcomeGroup & { handIdx: number } => typeof g.handIdx === "number")
-    .sort((a, b) => b.handIdx - a.handIdx)[0];
   const defaultKey =
-    newestHand?.templateKey
-    ?? multis.find((g) => g.templateKey === "most_hands")?.templateKey
+    multis.find((g) => g.templateKey === "most_hands")?.templateKey
     ?? multis[0]?.templateKey;
   const [featuredKey, setFeaturedKey] = useState<string | undefined>(defaultKey);
   const featured = multis.find((g) => g.templateKey === featuredKey) ?? multis[0];
@@ -330,19 +324,10 @@ interface MarketEntry {
 
 interface MultiOutcomeGroup {
   kind: "multi";
-  /** One of the four session-level template keys, OR `hand:<N>` for
-   *  hand-level markets. The hand: prefix lets us render every hand's
-   *  markets as their own multi-outcome card without exploding the
-   *  enum. Most code paths just compare templateKey to a string. */
-  templateKey: SessionTemplateKey | `hand:${number}`;
+  templateKey: "bluff_most" | "bust_first" | "biggest_pot" | "most_hands";
   title: string;
   outcomes: { marketId: string; player: string }[];
-  /** Set when templateKey starts with "hand:" — the underlying hand
-   *  index, useful for sorting most-recent-first and surfacing badges. */
-  handIdx?: number;
 }
-
-type SessionTemplateKey = "bluff_most" | "bust_first" | "biggest_pot" | "most_hands";
 
 interface BinaryGroup {
   kind: "binary";
@@ -351,27 +336,24 @@ interface BinaryGroup {
 
 type Group = MultiOutcomeGroup | BinaryGroup;
 
-const TEMPLATE_TITLES: Record<SessionTemplateKey, string> = {
+const TEMPLATE_TITLES: Record<MultiOutcomeGroup["templateKey"], string> = {
   bluff_most: "Who bluffs the most this session?",
   bust_first: "Who busts first?",
   biggest_pot: "Who wins the biggest pot tonight?",
   most_hands: "Who wins the most hands tonight?",
 };
 
-const TEMPLATE_PATTERNS: { key: SessionTemplateKey; rx: RegExp }[] = [
+const TEMPLATE_PATTERNS: { key: MultiOutcomeGroup["templateKey"]; rx: RegExp }[] = [
   { key: "bluff_most",  rx: /^Will (.+?) bluff the most this session\?$/ },
   { key: "bust_first",  rx: /^Will (.+?) bust first\?$/ },
   { key: "biggest_pot", rx: /^Will (.+?) win the biggest pot tonight\?$/ },
   { key: "most_hands",  rx: /^Will (.+?) win the most hands tonight\?$/ },
 ];
 
-const HAND_PATTERN = /^Will (.+?) win hand #(\d+)\?$/;
-
 function groupMarkets(event: EventDescriptor): Group[] {
   const labels = event.marketLabels ?? {};
   const ids = event.marketIds ?? [];
-  const sessionBuckets = new Map<SessionTemplateKey, MultiOutcomeGroup["outcomes"]>();
-  const handBuckets = new Map<number, MultiOutcomeGroup["outcomes"]>();
+  const buckets = new Map<MultiOutcomeGroup["templateKey"], MultiOutcomeGroup["outcomes"]>();
   const binary: BinaryGroup[] = [];
 
   for (const id of ids) {
@@ -385,47 +367,21 @@ function groupMarkets(event: EventDescriptor): Group[] {
       const m = label.match(rx);
       if (!m) continue;
       const player = m[1].trim();
-      if (!sessionBuckets.has(key)) sessionBuckets.set(key, []);
-      sessionBuckets.get(key)!.push({ marketId: id, player });
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push({ marketId: id, player });
       matched = true;
       break;
     }
-    if (matched) continue;
-    const handMatch = label.match(HAND_PATTERN);
-    if (handMatch) {
-      const player = handMatch[1].trim();
-      const handIdx = parseInt(handMatch[2], 10);
-      if (!handBuckets.has(handIdx)) handBuckets.set(handIdx, []);
-      handBuckets.get(handIdx)!.push({ marketId: id, player });
-      continue;
+    if (!matched) {
+      binary.push({ kind: "binary", market: { marketId: id, label } });
     }
-    binary.push({ kind: "binary", market: { marketId: id, label } });
   }
 
-  // Order: hand-level groups (newest first — they're the most active
-  // trading window), then session-level groups in template-priority
-  // order, then binaries.
+  // Order: multi-outcome groups in template-priority order, then binaries.
   const out: Group[] = [];
-
-  // Hand-level groups — every group with ≥1 outcome surfaces as a
-  // multi card; even single-player hand markets render here with one
-  // outcome rather than getting demoted to a binary card, since the
-  // narrative ("Who wins hand #17?") makes sense even with one option.
-  const handIdxs = [...handBuckets.keys()].sort((a, b) => b - a);
-  for (const handIdx of handIdxs) {
-    const outcomes = handBuckets.get(handIdx)!;
-    out.push({
-      kind: "multi",
-      templateKey: `hand:${handIdx}`,
-      title: `Who wins hand #${handIdx}?`,
-      handIdx,
-      outcomes: [...outcomes].sort((a, b) => a.player.localeCompare(b.player)),
-    });
-  }
-
-  const order: SessionTemplateKey[] = ["most_hands", "biggest_pot", "bluff_most", "bust_first"];
+  const order: MultiOutcomeGroup["templateKey"][] = ["most_hands", "biggest_pot", "bluff_most", "bust_first"];
   for (const key of order) {
-    const outcomes = sessionBuckets.get(key);
+    const outcomes = buckets.get(key);
     if (!outcomes || outcomes.length < 2) {
       // Don't promote a 1-outcome group — fall back to a binary card so
       // we don't render an awkward "1-outcome multi" card.
@@ -665,16 +621,12 @@ function PrivyGatedOrderForm(props: {
 }
 
 function humanLabelFor(key: MultiOutcomeGroup["templateKey"]): string {
-  if (typeof key === "string" && key.startsWith("hand:")) {
-    return `win hand #${key.slice("hand:".length)}`;
-  }
   switch (key) {
     case "bluff_most":  return "bluff the most this session";
     case "bust_first":  return "bust first";
     case "biggest_pot": return "win the biggest pot tonight";
     case "most_hands":  return "win the most hands tonight";
   }
-  return "win";
 }
 
 function FlatChartPlaceholder({ selectedColor }: { selectedColor: string }) {
@@ -882,16 +834,12 @@ function PolymarketCard({
 }
 
 function templateTag(key: MultiOutcomeGroup["templateKey"]): string {
-  if (typeof key === "string" && key.startsWith("hand:")) {
-    return `LIVE · HAND #${key.slice("hand:".length)}`;
-  }
   switch (key) {
     case "bluff_most":  return "BLUFFS";
     case "bust_first":  return "BUST FIRST";
     case "biggest_pot": return "BIGGEST POT";
     case "most_hands":  return "HANDS WON";
   }
-  return "MARKET";
 }
 
 function LockIcon() {
