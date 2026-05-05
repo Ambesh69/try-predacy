@@ -46,7 +46,8 @@ export interface SeededMarket {
     | "player-biggest-pot"
     | "player-most-hands"
     | "h2h-bluff"
-    | "h2h-pot";
+    | "h2h-pot"
+    | "hand-winner";
   /** Empty for generic markets. Set to player name(s) for player-aware. */
   players?: string[];
 }
@@ -221,6 +222,33 @@ function pickH2HPairs(players: Player[]): [Player, Player][] {
     pairs.push([a, b]);
   }
   return pairs;
+}
+
+/** Hand-level real-time markets — seeded the moment a new hand starts
+ *  (gameState OCR shows pre-flop → flop transition) for each currently
+ *  in-hand player. Settles the moment a winner is declared on screen.
+ *
+ *  Cap to top 5 in-hand players so a 9-player hand doesn't blow up
+ *  the market count. With ~50 hands/hr and 5 markets/hand we'd burn
+ *  ~250 markets/hr on devnet rent (~5 SOL); fine for demo length.
+ *
+ *  The slug bakes in handIdx so each hand creates fresh markets
+ *  rather than colliding with prior hands' settled markets. */
+export function handLevelMarketsFor(
+  sessionLabel: string,
+  handIdx: number,
+  inHandPlayers: Player[],
+): SeededMarket[] {
+  const players = inHandPlayers.slice(0, 5);
+  return players.map((p) =>
+    makeMarket({
+      sessionLabel,
+      slug: `hand_${handIdx}_${slugify(p.name)}`,
+      label: `Will ${p.name} win hand #${handIdx}?`,
+      kind: "hand-winner",
+      players: [p.name],
+    }),
+  );
 }
 
 /** Markets to add when a NEW player sits down mid-session (option A from

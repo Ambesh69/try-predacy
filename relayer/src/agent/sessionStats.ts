@@ -69,12 +69,48 @@ export interface SessionStatsRecord {
    *  Used to settle "first player busts within 90 minutes?" market. */
   firstBustAt: number | null;
 
-  /** Hand-state tracking — for hand-boundary detection (day 5 work). */
+  /** Hand-state tracking — for hand-boundary detection. */
   currentBoardCardCount: number;
   /** Approximate hand count this session — increments when board count
    *  drops back to 0 after being >0 (i.e., new hand dealt after prior
-   *  hand resolved). */
+   *  hand resolved). Also surfaced on the live stats panel. */
   handsSeen: number;
+  /** Hand idx most recently observed entering the flop. Used by the
+   *  hand-level real-time markets — each new hand gets fresh markets
+   *  keyed by this idx. Starts at 0 (no hands seen yet). */
+  currentHandIdx: number;
+  /** Players whose markets are currently open for the in-progress hand.
+   *  Set when the flop is observed; cleared the moment a winner is
+   *  declared (and the hand-winner markets settle). Empty between hands. */
+  currentHandPlayers: string[];
+}
+
+/** Side-effect description returned from recordSnapshot so the caller
+ *  can react to hand-level transitions (seed new markets, settle
+ *  resolved hands) without needing to diff state itself. */
+export interface SnapshotResult {
+  /** Fired when the OCR transitions from pre-flop (boardCardCount=0)
+   *  to a flop (boardCardCount>=3) and we capture the in-hand players
+   *  for the new hand. Marks the start of a new hand-level market
+   *  trading window. */
+  handStart?: {
+    handIdx: number;
+    /** Players we'll seed hand-winner markets for. Capped at 5 by
+     *  the caller (handLevelMarketsFor) so a full table doesn't blow
+     *  up the market count. */
+    players: string[];
+  };
+  /** Fired when the snap declares winners (winnerPlayers non-empty)
+   *  while there's an open hand. Marks the end of the trading window
+   *  — caller should settle hand-winner markets for handIdx with
+   *  winners=YES, others=NO. */
+  handResolved?: {
+    handIdx: number;
+    winners: string[];
+    /** All players the open-hand markets were seeded for, including
+     *  losers — caller settles the whole batch at once. */
+    players: string[];
+  };
 }
 
 interface StatsStore {
@@ -123,6 +159,8 @@ export class SessionStats {
       firstBustAt: null,
       currentBoardCardCount: 0,
       handsSeen: 0,
+      currentHandIdx: 0,
+      currentHandPlayers: [],
     };
     this.state.sessions[sessionLabel] = s;
     this.persist();
@@ -137,11 +175,12 @@ export class SessionStats {
    *  flags. Idempotent in the sense that re-processing the same frame
    *  doesn't double-count anything (we use seenStrengths and board-edge
    *  detection to avoid duplicate increments). */
-  recordSnapshot(sessionLabel: string, handleIdHex: string, snap: GameState): void {
-    if (!snap.tableView) return; // ignore intermissions / sponsor reels
+  recordSnapshot(sessionLabel: string, handleIdHex: string, snap: GameState): SnapshotResult {
+    if (!snap.tableView) return {}; // ignore intermissions / sponsor reels
     const s = this.ensureSession(sessionLabel, handleIdHex);
     s.lastSnapshotAt = snap.capturedAt;
     s.framesProcessed += 1;
+    const result: SnapshotResult = {};
 
     // ─── Pot tracking ───────────────────────────────────────────────
     if (snap.potUsd !== null && snap.potUsd > s.maxPotSoFar) {
@@ -206,15 +245,49 @@ export class SessionStats {
     }
 
     // ─── Hand-boundary detection (board count edge) ────────────────
-    // When boardCardCount drops to 0 after being >0, that's the start of
-    // a new hand. Increment handsSeen.
+    // When boardCardCount drops to 0 after being >0, that's the prior
+    // hand wrapping. Increment handsSeen.
     if (lastBoard !== undefined && lastBoard > 0 && snap.boardCardCount === 0) {
       s.handsSeen += 1;
     }
+
+    // ─── Hand-level market lifecycle ────────────────────────────────
+    //
+    // We use the FLOP transition (preflop=0 → flop>=3) to mark a new
+    // hand starting because:
+    //   1. inHandPlayers is most reliable at this moment — broadcast
+    //      has just rendered nameplates for everyone in the pot
+    //   2. Avoids double-firing on brief OCR jitter where boardCount
+    //      flickers between 0 and 1
+    //
+    // The hand resolves the moment winnerPlayers is populated. We
+    // emit the transition deltas in `result` so the streamMonitor can
+    // seed/settle hand-winner markets without re-implementing this
+    // edge detection.
+    const becamePostflop = (lastBoard ?? 0) === 0 && snap.boardCardCount >= 3;
+    if (becamePostflop && s.currentHandPlayers.length === 0) {
+      s.currentHandIdx += 1;
+      s.currentHandPlayers = snap.inHandPlayers.slice(0, 5);
+      result.handStart = {
+        handIdx: s.currentHandIdx,
+        players: [...s.currentHandPlayers],
+      };
+    }
+    if (snap.winnerPlayers.length > 0 && s.currentHandPlayers.length > 0) {
+      result.handResolved = {
+        handIdx: s.currentHandIdx,
+        winners: [...snap.winnerPlayers],
+        players: [...s.currentHandPlayers],
+      };
+      // Reset so the next flop transition picks up a fresh hand.
+      s.currentHandPlayers = [];
+    }
+
     this.lastBoardByLabel.set(sessionLabel, snap.boardCardCount);
     s.currentBoardCardCount = snap.boardCardCount;
 
     this.persist();
+    return result;
   }
 
   /** Manual record path used by the audio/cross-confirm aggregator
