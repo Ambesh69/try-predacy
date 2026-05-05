@@ -10,6 +10,7 @@ import {
   getEvent,
   relativeTime,
 } from "@/lib/lpApi";
+import { OrderForm } from "@/components/OrderForm";
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
 
@@ -88,65 +89,116 @@ export default function PredacyEventDetail({ params }: Props) {
         </div>
       </section>
 
-      <main className="max-w-7xl mx-auto px-4 py-8 grid lg:grid-cols-[1fr_320px] gap-6">
-        <div className="space-y-4">
-          <SectionHeader>
-            Markets <span className="text-muted-dim ml-1">({event.marketIds?.length ?? 0})</span>
-          </SectionHeader>
-          {(!event.marketIds || event.marketIds.length === 0) ? (
-            <div className="border border-card-border bg-card p-6 text-center">
-              <p className="text-[13px] text-text">No markets attached to this event yet.</p>
-              <p className="text-[11px] text-muted-dim mt-2 max-w-md mx-auto">
-                An operator can attach Polymarket-mirrored markets via the relayer&apos;s{" "}
-                <code className="text-accent">POST /events/{event.handleId.slice(0, 8)}…/markets</code>{" "}
-                endpoint. Once attached, takers can trade under this event&apos;s sealed-bid batch auction.
-              </p>
-            </div>
-          ) : (
-            <MarketsGrid event={event} />
-          )}
-        </div>
-
-        <aside className="space-y-4">
-          <SectionHeader>Event parameters</SectionHeader>
-          <div className="border border-card-border bg-card p-4 space-y-3 text-[11px]">
-            <ParamRow
-              label="Cumulative volume"
-              value={`$${formatUsdc6(event.cumulativeVolumeUsdc, 2)}`}
-            />
-            <ParamRow label="Taker fee" value={`${event.feeBpsTaker / 100}%`} />
-            <ParamRow
-              label="Fee split"
-              value={`${event.feeBpsTreasury / 100}% treasury · ${event.feeBpsRebates / 100}% rebates`}
-            />
-            <ParamRow
-              label="Graduation gate"
-              value={`$${formatUsdc6(event.graduationThresholdUsdc, 0)} × ${event.graduationBatches}`}
-              hint={event.graduated
-                ? "Tier 1 backstop active — LP vault absorbs residual"
-                : "Pre-grad — Tier 0 LMSR fills cold-start"}
-            />
-            <ParamRow
-              label="Bootstrap seed"
-              value={`$${formatUsdc6(event.bootstrapSeedUsdc, 0)}`}
-            />
-            <ParamRow
-              label="Handle id"
-              value={event.handleId.slice(0, 16) + "…"}
-              monospace
-            />
+      <main className="max-w-7xl mx-auto px-4 py-8 space-y-8">
+        {(!event.marketIds || event.marketIds.length === 0) ? (
+          <div className="border border-card-border bg-card p-6 text-center">
+            <p className="text-[13px] text-text">No markets attached to this event yet.</p>
+            <p className="text-[11px] text-muted-dim mt-2 max-w-md mx-auto">
+              An operator can attach Polymarket-mirrored markets via the relayer&apos;s{" "}
+              <code className="text-accent">POST /events/{event.handleId.slice(0, 8)}…/markets</code>{" "}
+              endpoint. Once attached, takers can trade under this event&apos;s sealed-bid batch auction.
+            </p>
           </div>
-
-          <SectionHeader>How it works</SectionHeader>
-          <div className="border border-card-border bg-card-elevated p-4 text-[10px] text-muted leading-snug space-y-1.5">
-            <p><span className="text-accent">·</span> Each market under this event clears in 30s sealed-bid batches.</p>
-            <p><span className="text-accent">·</span> Taker fees feed the per-event rebate pool ({event.feeBpsRebates / 100}% slice).</p>
-            <p><span className="text-accent">·</span> LP capital absorbs residual imbalance after pair-matching.</p>
-            <p><span className="text-accent">·</span> Blind LP keeps individual deposits FHE-encrypted on-chain.</p>
-          </div>
-        </aside>
+        ) : (
+          <FeaturedAndRest event={event} />
+        )}
       </main>
     </PageShell>
+  );
+}
+
+function FeaturedAndRest({ event }: { event: EventDescriptor }) {
+  const groups = groupMarkets(event);
+  // Promote the canonical "most_hands" group to the featured slot when
+  // present — most universally interesting across both Triton (cash
+  // game) and HCL (streamer showdown). Falls back to the first multi-
+  // outcome group if most_hands isn't available, then to nothing if
+  // the event only has binaries.
+  const featured =
+    groups.find((g): g is MultiOutcomeGroup => g.kind === "multi" && g.templateKey === "most_hands")
+    ?? groups.find((g): g is MultiOutcomeGroup => g.kind === "multi");
+  const restGroups = groups.filter((g) => g !== featured);
+
+  return (
+    <>
+      {featured && <FeaturedMultiOutcome group={featured} event={event} />}
+      <section className="grid lg:grid-cols-[1fr_320px] gap-6">
+        <div className="space-y-4">
+          <SectionHeader>
+            More markets <span className="text-muted-dim ml-1">({restGroups.length})</span>
+          </SectionHeader>
+          <RestOfMarkets groups={restGroups} />
+        </div>
+        <EventSidebar event={event} />
+      </section>
+    </>
+  );
+}
+
+function RestOfMarkets({ groups }: { groups: Group[] }) {
+  const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
+  const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
+  if (multis.length === 0 && binaries.length === 0) {
+    return (
+      <p className="text-[11px] text-muted-dim italic">All markets surfaced above.</p>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {multis.map((g) => (
+        <MultiOutcomeMarket key={`m-${g.templateKey}`} group={g} />
+      ))}
+      {binaries.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {binaries.map(({ market }) => (
+            <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EventSidebar({ event }: { event: EventDescriptor }) {
+  return (
+    <aside className="space-y-4">
+      <SectionHeader>Event parameters</SectionHeader>
+      <div className="border border-card-border bg-card p-4 space-y-3 text-[11px]">
+        <ParamRow
+          label="Cumulative volume"
+          value={`$${formatUsdc6(event.cumulativeVolumeUsdc, 2)}`}
+        />
+        <ParamRow label="Taker fee" value={`${event.feeBpsTaker / 100}%`} />
+        <ParamRow
+          label="Fee split"
+          value={`${event.feeBpsTreasury / 100}% treasury · ${event.feeBpsRebates / 100}% rebates`}
+        />
+        <ParamRow
+          label="Graduation gate"
+          value={`$${formatUsdc6(event.graduationThresholdUsdc, 0)} × ${event.graduationBatches}`}
+          hint={event.graduated
+            ? "Tier 1 backstop active — LP vault absorbs residual"
+            : "Pre-grad — Tier 0 LMSR fills cold-start"}
+        />
+        <ParamRow
+          label="Bootstrap seed"
+          value={`$${formatUsdc6(event.bootstrapSeedUsdc, 0)}`}
+        />
+        <ParamRow
+          label="Handle id"
+          value={event.handleId.slice(0, 16) + "…"}
+          monospace
+        />
+      </div>
+
+      <SectionHeader>How it works</SectionHeader>
+      <div className="border border-card-border bg-card-elevated p-4 text-[10px] text-muted leading-snug space-y-1.5">
+        <p><span className="text-accent">·</span> Each market under this event clears in 30s sealed-bid batches.</p>
+        <p><span className="text-accent">·</span> Taker fees feed the per-event rebate pool ({event.feeBpsRebates / 100}% slice).</p>
+        <p><span className="text-accent">·</span> LP capital absorbs residual imbalance after pair-matching.</p>
+        <p><span className="text-accent">·</span> Blind LP keeps individual deposits FHE-encrypted on-chain.</p>
+      </div>
+    </aside>
   );
 }
 
@@ -344,25 +396,226 @@ function groupMarkets(event: EventDescriptor): Group[] {
   return [...out, ...binary];
 }
 
-function MarketsGrid({ event }: { event: EventDescriptor }) {
-  const groups = groupMarkets(event);
-  // Multi-outcome groups render full-width; binary cards cluster into
-  // a 2-col grid below them. Prevents binaries from each taking a full
-  // row when sandwiched between multis.
-  const multis = groups.filter((g): g is MultiOutcomeGroup => g.kind === "multi");
-  const binaries = groups.filter((g): g is BinaryGroup => g.kind === "binary");
+/* ── Featured (image-3-style) multi-outcome with chart + order panel ─ */
+
+function FeaturedMultiOutcome({
+  group,
+  event,
+}: {
+  group: MultiOutcomeGroup;
+  event: EventDescriptor;
+}) {
+  // Selected outcome — drives both the order form and the highlight in
+  // the outcomes list. Defaults to the first outcome since prices are
+  // uniform (1/N) until the first batch clears.
+  const [selectedId, setSelectedId] = useState<string>(group.outcomes[0].marketId);
+  const selected = group.outcomes.find((o) => o.marketId === selectedId) ?? group.outcomes[0];
+  const n = group.outcomes.length;
+  const uniformPct = 100 / n;
+  const yesPrice = uniformPct / 100;
+  const noPrice = 1 - yesPrice;
+
   return (
-    <div className="space-y-3">
-      {multis.map((g) => (
-        <MultiOutcomeMarket key={`m-${g.templateKey}`} group={g} />
-      ))}
-      {binaries.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {binaries.map(({ market }) => (
-            <MarketCard key={market.marketId} marketId={market.marketId} label={market.label} />
-          ))}
+    <section className="border border-card-border bg-card-elevated">
+      {/* Top header row — title + meta tags. Matches image 3's
+          "Tag · Ends X · Total vol" header. */}
+      <div className="px-5 py-4 border-b border-card-border flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-[10px] tracking-widest uppercase text-accent mb-1">
+            Featured market · {n} outcomes
+          </p>
+          <h2 className="text-[18px] md:text-[20px] font-bold text-text leading-tight">
+            {group.title}
+          </h2>
         </div>
-      )}
+        <div className="text-right">
+          <p className="text-[10px] tracking-widest uppercase text-muted-dim">Cumulative volume</p>
+          <p className="text-[14px] tabular-nums text-text font-mono">
+            ${formatUsdc6(event.cumulativeVolumeUsdc, 0)}
+          </p>
+        </div>
+      </div>
+
+      {/* Selected-outcome status line — matches image 3's "SELECTED X · Y% chance · YES Z¢ NO W¢" */}
+      <div className="px-5 py-3 border-b border-card-border flex items-center gap-3 flex-wrap text-[11px]">
+        <span className="text-muted tracking-widest uppercase">Selected</span>
+        <span className="text-text font-mono font-bold">{selected.player}</span>
+        <span className="text-muted-dim">·</span>
+        <span className="text-accent tabular-nums">{Math.round(uniformPct)}% chance</span>
+        <span className="text-muted-dim">·</span>
+        <span className="tabular-nums" style={{ color: "#52F0D3" }}>
+          YES {Math.round(uniformPct)}¢
+        </span>
+        <span className="tabular-nums" style={{ color: "#FF7683" }}>
+          NO {100 - Math.round(uniformPct)}¢
+        </span>
+      </div>
+
+      <div className="grid lg:grid-cols-[1fr_360px]">
+        {/* Left column — placeholder chart (no historical data yet) +
+            outcomes list. Once we accumulate batch-clear price history
+            this becomes a real recharts/lightweight-charts panel. */}
+        <div className="p-5 lg:border-r border-card-border space-y-4">
+          <FlatChartPlaceholder selectedColor="#4EA3FF" />
+          <FeaturedOutcomeList
+            group={group}
+            uniformPct={uniformPct}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+          />
+        </div>
+
+        {/* Right column — sealed-bid order panel scoped to the selected
+            outcome's binary market. OrderForm handles its own state but
+            requires Privy context (no-ops gracefully when not
+            configured, e.g. local dev without NEXT_PUBLIC_PRIVY_APP_ID). */}
+        <aside className="p-5 bg-card">
+          <PrivyGatedOrderForm
+            // Re-mount on outcome switch so OrderForm's internal phase
+            // state resets cleanly (otherwise a partially-prepared order
+            // would carry across the outcome change).
+            key={selected.marketId}
+            marketId={selected.marketId}
+            marketQuestion={`Will ${selected.player} ${humanLabelFor(group.templateKey)}?`}
+            yesPrice={yesPrice}
+            noPrice={noPrice}
+          />
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+/** Wraps OrderForm so it only renders when Privy is configured. Without
+ *  this guard the underlying useSolanaWallets() hook reads .connectors
+ *  on a null context and crashes the entire page (Privy returns null
+ *  outside a PrivyProvider). The same guard would help the existing
+ *  /market/predacy/<id> page if it surfaced this fallback there too. */
+function PrivyGatedOrderForm(props: {
+  marketId: string;
+  marketQuestion: string;
+  yesPrice: number;
+  noPrice: number;
+}) {
+  const privyConfigured = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  if (!privyConfigured) {
+    return (
+      <div className="text-[11px] text-muted-dim leading-snug space-y-2">
+        <p className="text-[11px] tracking-widest uppercase text-accent">Place a sealed bid</p>
+        <p>
+          Wallet connection isn&apos;t configured in this environment.
+          Set <code className="text-accent">NEXT_PUBLIC_PRIVY_APP_ID</code> to enable
+          the order panel.
+        </p>
+      </div>
+    );
+  }
+  return <OrderForm {...props} />;
+}
+
+function humanLabelFor(key: MultiOutcomeGroup["templateKey"]): string {
+  switch (key) {
+    case "bluff_most":  return "bluff the most this session";
+    case "bust_first":  return "bust first";
+    case "biggest_pot": return "win the biggest pot tonight";
+    case "most_hands":  return "win the most hands tonight";
+  }
+}
+
+function FlatChartPlaceholder({ selectedColor }: { selectedColor: string }) {
+  // Until we have historical price data from settled batches, the chart
+  // would just be a flat line at the uniform prior. Surface this honestly
+  // rather than rendering empty axes — the message becomes a feature
+  // ("price history starts after first batch") and the panel still has
+  // visual weight in the layout.
+  return (
+    <div className="relative border border-card-border bg-card h-[180px] md:h-[220px] flex items-center justify-center overflow-hidden">
+      {/* faint grid suggesting future chart */}
+      <div className="absolute inset-0 opacity-30" style={{
+        backgroundImage: `linear-gradient(${selectedColor}11 1px, transparent 1px), linear-gradient(90deg, ${selectedColor}11 1px, transparent 1px)`,
+        backgroundSize: "32px 32px",
+      }} />
+      <div className="relative text-center">
+        <p className="text-[11px] tracking-widest uppercase text-accent">Live price history</p>
+        <p className="text-[10px] text-muted-dim mt-1">starts after the first sealed batch clears</p>
+      </div>
+    </div>
+  );
+}
+
+function FeaturedOutcomeList({
+  group,
+  uniformPct,
+  selectedId,
+  onSelect,
+}: {
+  group: MultiOutcomeGroup;
+  uniformPct: number;
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  const pctRounded = Math.round(uniformPct);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[10px] tracking-widest uppercase text-muted">{group.outcomes.length} outcomes</p>
+        <p className="text-[10px] text-muted-dim">click to select</p>
+      </div>
+      <div className="border border-card-border">
+        {group.outcomes.map(({ marketId, player }, idx) => {
+          const isSelected = marketId === selectedId;
+          return (
+            <button
+              type="button"
+              key={marketId}
+              onClick={() => onSelect(marketId)}
+              className={clsx(
+                "w-full grid grid-cols-[24px_1fr_auto_auto_auto] items-center gap-3 px-3 py-2 text-left transition-colors",
+                idx > 0 && "border-t border-card-border",
+                isSelected ? "bg-accent/[0.08]" : "hover:bg-card-elevated",
+              )}
+            >
+              <span className={clsx(
+                "text-[10px] tabular-nums",
+                isSelected ? "text-accent" : "text-muted-dim",
+              )}>
+                {idx + 1}
+              </span>
+              <span className={clsx(
+                "text-[12px] font-mono truncate",
+                isSelected ? "text-text font-bold" : "text-text",
+              )}>
+                {player}
+              </span>
+              <div className="hidden md:block w-[100px] h-[2px] bg-border rounded-full overflow-hidden">
+                <div
+                  className="h-full"
+                  style={{ width: `${Math.max(2, uniformPct)}%`, background: isSelected ? "#4EA3FF" : "#4EA3FF99" }}
+                />
+              </div>
+              <span className={clsx(
+                "text-[12px] tabular-nums w-[36px] text-right font-bold",
+              )} style={{ color: isSelected ? "#4EA3FF" : "#4EA3FFAA" }}>
+                {pctRounded}%
+              </span>
+              <div className="flex items-center gap-1">
+                <span
+                  className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
+                  style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}
+                >
+                  YES {pctRounded}¢
+                </span>
+                <span
+                  className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
+                  style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}
+                >
+                  NO {100 - pctRounded}¢
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
