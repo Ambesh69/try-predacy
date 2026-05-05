@@ -813,16 +813,19 @@ export class StreamMonitor {
     };
     this.state.active[created.handleIdHex] = session;
 
-    // Seed generic markets first so the cards show up fast — these don't
-    // depend on the lineup. Player-aware markets follow.
-    for (const m of genericMarketsFor(ch.tag, sessionLabel)) {
-      await this.safeSeed(created.handleIdHex, m);
-    }
+    // Generic markets (quads/royal/pot threshold/early bust/all-ins)
+    // resolve too quickly to be interesting prediction markets — most
+    // fire within the first hour and leave no trading window. Skip
+    // them in auto-seeding; they're still in marketTemplates if
+    // someone wants to one-off-seed them via the admin endpoint.
+    // Player + H2H markets are the real demo content.
     for (const m of playerMarketsFor(sessionLabel, lineup.players)) {
       await this.safeSeed(created.handleIdHex, m);
     }
 
-    console.log(`[StreamMonitor] ${ch.tag} ${sessionLabel} seeded ${5 + lineup.players.length * 4 + (lineup.players.length >= 2 ? 2 : 0)} markets`);
+    const playerCount = lineup.players.length;
+    const h2hCount = playerCount >= 2 ? Math.min(3, Math.floor(playerCount / 2)) * 2 : 0;
+    console.log(`[StreamMonitor] ${ch.tag} ${sessionLabel} seeded ${playerCount * 4 + h2hCount} markets`);
 
     // Initialise stats record + spin up the game-state OCR loop.
     this.stats.ensureSession(sessionLabel, created.handleIdHex);

@@ -182,11 +182,14 @@ export function playerMarketsFor(
     }
   }
 
-  // Head-to-head markets between the first two seats. v2 picks "most
-  // notorious" pair from a known-pros table (Hellmuth, Dwan, Polk, etc).
-  // For now, keep it simple and predictable.
-  if (players.length >= 2) {
-    const [a, b] = [players[0], players[1]];
+  // Head-to-head markets — the strongest demo content because of clean
+  // PvP narrative + long settlement window. We seed up to 3 pairs by
+  // pairing top vs bottom of the lineup (1-vs-N, 2-vs-(N-1), 3-vs-(N-2))
+  // so we get diverse matchups instead of always 1-vs-2 by alphabetical
+  // chance. Once we have a notoriety/recency table we'd pick known
+  // rivalries (Hellmuth-vs-Polk, Dwan-vs-Antonius, etc.) but
+  // top-vs-bottom gives reasonable spread today.
+  for (const [a, b] of pickH2HPairs(players)) {
     for (const t of H2H_TEMPLATES) {
       out.push(makeMarket({
         sessionLabel,
@@ -199,6 +202,25 @@ export function playerMarketsFor(
   }
 
   return out;
+}
+
+/** Select up to 3 (a, b) pairs to seed as head-to-head markets. Pairs
+ *  the i-th-from-front with the i-th-from-back so a 9-player table
+ *  gets pairs (1,9), (2,8), (3,7) — diverse skill/notoriety mix
+ *  rather than the alphabetical first two. With <2 players we return
+ *  no pairs (no H2H to seed). With 2-3 players we return at most
+ *  floor(N/2) pairs so we don't seed self-vs-self. */
+function pickH2HPairs(players: Player[]): [Player, Player][] {
+  if (players.length < 2) return [];
+  const pairs: [Player, Player][] = [];
+  const maxPairs = Math.min(3, Math.floor(players.length / 2));
+  for (let i = 0; i < maxPairs; i++) {
+    const a = players[i];
+    const b = players[players.length - 1 - i];
+    if (a === b) break;
+    pairs.push([a, b]);
+  }
+  return pairs;
 }
 
 /** Markets to add when a NEW player sits down mid-session (option A from
