@@ -408,72 +408,80 @@ function MarketsGrid({ event }: { event: EventDescriptor }) {
 }
 
 function MultiOutcomeMarket({ group }: { group: MultiOutcomeGroup }) {
+  const [expanded, setExpanded] = useState(false);
   const n = group.outcomes.length;
   // Predacy-native markets default to 50/50 priors — actual prices
   // emerge from the first sealed-bid batch. We display a uniform prior
-  // (1/N) across outcomes so the card reads as a true multi-outcome
-  // market until live price data lands.
-  const uniformPct = Math.round(100 / n);
+  // (1/N) across outcomes until live price data lands.
+  const uniformPct = 100 / n;
+  const VISIBLE_DEFAULT = 4;
+  const visible = expanded ? group.outcomes : group.outcomes.slice(0, VISIBLE_DEFAULT);
+  const hiddenCount = n - VISIBLE_DEFAULT;
 
   return (
-    <div className="border border-card-border bg-card overflow-hidden">
-      <div className="px-4 py-3 border-b border-card-border flex items-center justify-between gap-3">
-        <h3 className="text-[14px] text-text leading-snug font-bold">{group.title}</h3>
-        <span className="text-[10px] text-muted-dim tracking-widest uppercase shrink-0">
+    <div className="border border-card-border bg-card p-5 flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-[15px] text-text leading-snug font-bold">{group.title}</h3>
+        <span className="text-[10px] text-muted-dim tabular-nums shrink-0 mt-1">
           {n} outcomes
         </span>
       </div>
-      <div>
-        {group.outcomes.map(({ marketId, player }, idx) => (
-          <Link
+      <div className="flex flex-col">
+        {visible.map(({ marketId, player }) => (
+          <OutcomeRow
             key={marketId}
-            href={`/market/predacy/${marketId}`}
-            className={clsx(
-              "flex items-center gap-3 px-4 py-3 hover:bg-card-elevated transition-colors group cursor-crosshair",
-              idx > 0 && "border-t border-card-border",
-            )}
-          >
-            <span className="text-[10px] text-muted-dim tabular-nums w-5 shrink-0">
-              {idx + 1}
-            </span>
-            <div className="flex-1 min-w-0">
-              <p className="text-[13px] text-text font-mono truncate">{player}</p>
-              <p className="text-[10px] text-muted-dim">
-                Bet YES = "{player} wins"
-              </p>
-            </div>
-            <div className="hidden sm:block w-[120px] h-[2px] bg-border rounded-full shrink-0">
-              <div
-                className="h-full transition-all duration-500"
-                style={{ width: `${uniformPct}%`, background: "#4EA3FF" }}
-              />
-            </div>
-            <div className="flex items-baseline gap-1 shrink-0">
-              <span className="text-[14px] tabular-nums font-black" style={{ color: "#4EA3FF" }}>
-                {uniformPct}%
-              </span>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <span
-                className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
-                style={{ borderColor: "#2CE8C655", color: "#52F0D3", background: "#2CE8C612" }}
-              >
-                YES {Math.round(100 / n)}¢
-              </span>
-              <span
-                className="text-[10px] px-1.5 py-0.5 border font-mono tabular-nums"
-                style={{ borderColor: "#FF5F6D55", color: "#FF7683", background: "#FF5F6D12" }}
-              >
-                NO {100 - Math.round(100 / n)}¢
-              </span>
-            </div>
-            <span className="text-accent text-[12px] hidden md:inline shrink-0 group-hover:translate-x-0.5 transition-transform">
-              →
-            </span>
-          </Link>
+            marketId={marketId}
+            player={player}
+            pct={uniformPct}
+          />
         ))}
       </div>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="text-[11px] text-muted-dim hover:text-accent transition-colors text-left tracking-wider"
+        >
+          {expanded ? "show less" : `+${hiddenCount} more outcome${hiddenCount === 1 ? "" : "s"}`}
+        </button>
+      )}
     </div>
+  );
+}
+
+function OutcomeRow({
+  marketId,
+  player,
+  pct,
+}: {
+  marketId: string;
+  player: string;
+  pct: number;
+}) {
+  const pctRounded = Math.round(pct);
+  // Bar tint biased to red→amber→green by likelihood, like image 2.
+  const barColor =
+    pct < 10 ? "#FF5F6D" : pct < 25 ? "#F7B500" : pct < 50 ? "#4EA3FF" : "#2CE8C6";
+  const pctColor =
+    pct < 10 ? "#FF7683" : pct < 25 ? "#F7B500" : pct < 50 ? "#4EA3FF" : "#52F0D3";
+  return (
+    <Link
+      href={`/market/predacy/${marketId}`}
+      className="grid grid-cols-[1fr_auto_auto] items-center gap-4 py-1.5 group"
+    >
+      <span className="text-[13px] text-text font-mono group-hover:text-accent transition-colors truncate">
+        {player}
+      </span>
+      <div className="w-[160px] h-[3px] bg-border rounded-full overflow-hidden">
+        <div
+          className="h-full transition-all duration-500"
+          style={{ width: `${Math.max(2, pct)}%`, background: barColor }}
+        />
+      </div>
+      <span className="text-[13px] tabular-nums font-bold w-[40px] text-right" style={{ color: pctColor }}>
+        {pctRounded}%
+      </span>
+    </Link>
   );
 }
 
