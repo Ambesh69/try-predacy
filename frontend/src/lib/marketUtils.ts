@@ -56,3 +56,34 @@ export function fmtCents(p: number): string {
   if (c >= 99.95) return "100¢";
   return `${c.toFixed(1)}¢`;
 }
+
+/** Pull unique player names from an EventLedger's marketLabels by
+ *  reversing the per-player templates seeded by the agent. Generics
+ *  and H2H labels are ignored. Returns names in first-seen order so
+ *  the UI is stable across renders. Used by both the markets-index
+ *  card and the event-detail page to surface "who's at the table"
+ *  without a separate API call. */
+export function playersFromMarketLabels(labels: Record<string, string> | undefined): string[] {
+  if (!labels) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const PATTERNS = [
+    /^Will (.+?) bluff the most this session\?$/,
+    /^Will (.+?) bust first\?$/,
+    /^Will (.+?) win the biggest pot tonight\?$/,
+    /^Will (.+?) win the most hands tonight\?$/,
+  ];
+  for (const lbl of Object.values(labels)) {
+    for (const rx of PATTERNS) {
+      const m = lbl.match(rx);
+      if (!m) continue;
+      const name = m[1].trim();
+      const key = name.toLowerCase();
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push(name);
+      break;
+    }
+  }
+  return out;
+}
