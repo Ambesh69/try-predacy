@@ -1629,6 +1629,7 @@ app.get("/events", (_req, res) => {
     marketCount: ev.marketIds.length,
     marketIds: ev.marketIds,
     marketLabels: ev.marketLabels ?? {},
+    resolutions: ev.resolutions ?? {},
     feeBpsTaker: ev.feeBpsTaker,
     feeBpsTreasury: ev.feeBpsTreasury,
     feeBpsRebates: ev.feeBpsRebates,
