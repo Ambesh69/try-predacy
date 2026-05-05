@@ -513,6 +513,26 @@ export class SolanaClient {
     return tx;
   }
 
+  /**
+   * Resolve a market's final outcome (1 = YES wins, 2 = NO wins).
+   * Operator-only. Sets market.resolved = true and the winning side
+   * so users can call redeem_outcome to swap winning tokens 1:1 for
+   * USDC. Idempotent at the program level — repeats throw
+   * MarketAlreadyResolved.
+   */
+  async resolveMarket(marketId: Buffer, outcome: 1 | 2): Promise<string> {
+    const [market] = this.marketPda(marketId);
+    const tx = await this.program.methods
+      .resolveMarket(outcome)
+      .accounts({
+        market,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[resolveMarket] ${marketId.toString("hex").slice(0, 8)}… outcome=${outcome === 1 ? "YES" : "NO"} tx: ${tx}`);
+    return tx;
+  }
+
   // ─── Account Fetchers ───
 
   async fetchBatch(marketId: Buffer, batchIndex: bigint) {

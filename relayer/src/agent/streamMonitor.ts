@@ -136,6 +136,14 @@ export class StreamMonitor {
    *  the API and dumps the multi-line 403 JSON body. */
   private youtubeBackoffUntil: number = 0;
 
+  /** Optional callback fired after every successful gameState
+   *  snapshot. Wired to the SettlementEngine's live trigger so
+   *  event-driven markets (quads, royal, first bust, etc.) settle
+   *  the moment their condition is met without waiting for session
+   *  end. Errors here are caught at the call site so a failing
+   *  settle never breaks the game-state loop. */
+  private onSnapshot?: (handleIdHex: string) => Promise<void>;
+
   constructor(args: {
     apiKey: string;
     openaiApiKey: string;
@@ -143,6 +151,10 @@ export class StreamMonitor {
     stats: SessionStats;
     createEvent: (args: CreateEventArgs) => Promise<CreateEventResult>;
     seedMarket: (eventHandleHex: string, marketIdHex: string, label: string) => Promise<void>;
+    /** Called after each successful recordSnapshot. Use to drive the
+     *  SettlementEngine's live trigger. Optional — left undefined the
+     *  monitor behaves as before. */
+    onSnapshot?: (handleIdHex: string) => Promise<void>;
     channels?: MonitoredChannel[];
     storePath?: string;
   }) {
@@ -153,6 +165,7 @@ export class StreamMonitor {
     this.stats = args.stats;
     this.createEvent = args.createEvent;
     this.seedMarket = args.seedMarket;
+    this.onSnapshot = args.onSnapshot;
     this.channels = args.channels ?? DEFAULT_CHANNELS;
     this.storePath = args.storePath
       || process.env.AGENT_SESSION_STORE
@@ -248,6 +261,17 @@ export class StreamMonitor {
         const snap = await this.gameState.snapshot(sess.videoId);
         if (snap) {
           this.stats.recordSnapshot(sess.sessionLabel, sess.handleIdHex, snap);
+          // Fire the live settlement trigger after the stats record
+          // updates so event-driven markets (quads, royal, first bust,
+          // pot-threshold) resolve the moment their condition is met.
+          // Caught locally so a settle failure can't break the loop.
+          if (this.onSnapshot) {
+            try {
+              await this.onSnapshot(sess.handleIdHex);
+            } catch (settleErr: any) {
+              console.warn(`[StreamMonitor] live settle failed for ${sess.handleIdHex.slice(0, 8)}…: ${settleErr.message?.slice(0, 160)}`);
+            }
+          }
         }
       } catch (err: any) {
         // Errors are already logged inside the extractor; just keep ticking.

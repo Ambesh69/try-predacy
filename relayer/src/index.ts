@@ -1233,8 +1233,10 @@ async function seedMarketUnderEvent(
 // + transcript-based settlement get layered on by later phases.
 import { StreamMonitor } from "./agent/streamMonitor";
 import { getSessionStats } from "./agent/sessionStats";
+import { getSettlementEngine } from "./agent/settlementEngine";
 
 const sessionStats = getSessionStats();
+const settlementEngine = getSettlementEngine(client, eventLedger, sessionStats);
 const streamMonitor = new StreamMonitor({
   apiKey: process.env.YOUTUBE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
@@ -1245,6 +1247,12 @@ const streamMonitor = new StreamMonitor({
     return { handleIdHex: out.handleIdHex, eventHandlePda: out.eventHandlePda };
   },
   seedMarket: seedMarketUnderEvent,
+  // Live settlement trigger: after every gameState snapshot, settle
+  // any event-driven markets whose condition is now met. Idempotent
+  // via the engine's resolved-set cache.
+  onSnapshot: async (handleIdHex) => {
+    await settlementEngine.settleLive(handleIdHex);
+  },
 });
 streamMonitor.start();
 
@@ -1404,6 +1412,67 @@ app.post("/agent/start-session", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[POST /agent/start-session] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /agent/events/:handle/settlement/preview
+ * Dry-run — show what each market under this event WOULD resolve to
+ * if we settled now. No on-chain effects. Useful for verifying the
+ * resolution rules + spot-checking ahead of a real settle.
+ *
+ * Query: ?trigger=live|end (default end)
+ */
+app.get("/agent/events/:handle/settlement/preview", (req, res) => {
+  try {
+    const handle = req.params.handle;
+    const trigger = (req.query.trigger as string) === "live" ? "live" : "end";
+    const pending = settlementEngine.preview(handle, trigger);
+    res.json({
+      ok: true,
+      trigger,
+      count: pending.length,
+      resolutions: pending.map((p) => ({
+        marketIdHex: p.marketIdHex,
+        label: p.label,
+        kind: p.classified?.kind ?? null,
+        outcome: p.outcome === 1 ? "YES" : "NO",
+        reason: p.reason,
+      })),
+    });
+  } catch (err: any) {
+    console.error("[GET /agent/events/:handle/settlement/preview] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /agent/events/:handle/settlement/end
+ * Settle every still-UNRESOLVED market under this event using the
+ * final session stats. Used to manually trigger end-of-session
+ * settlement without ending the session in the StreamMonitor (which
+ * is gated on YouTube grace periods etc).
+ */
+app.post("/agent/events/:handle/settlement/end", async (req, res) => {
+  try {
+    const handle = req.params.handle;
+    const t0 = Date.now();
+    const applied = await settlementEngine.settleEnd(handle);
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - t0,
+      count: applied.length,
+      resolutions: applied.map((p) => ({
+        marketIdHex: p.marketIdHex,
+        label: p.label,
+        kind: p.classified?.kind ?? null,
+        outcome: p.outcome === 1 ? "YES" : "NO",
+        reason: p.reason,
+      })),
+    });
+  } catch (err: any) {
+    console.error("[POST /agent/events/:handle/settlement/end] Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
