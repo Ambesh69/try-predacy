@@ -129,6 +129,12 @@ export class StreamMonitor {
   /** Per-active-session game-state polling loops, keyed by lineup hash.
    *  Started when a session is created, stopped when it ends. */
   private gameStateTimers: Map<string, NodeJS.Timeout> = new Map();
+  /** When the YouTube API returns 403 (quota exhausted), back off
+   *  globally until this timestamp. Quota typically resets at midnight
+   *  PT, but we don't know the exact reset time, so we sleep an hour
+   *  and retry. Keeps the log clean — without this, every poll hits
+   *  the API and dumps the multi-line 403 JSON body. */
+  private youtubeBackoffUntil: number = 0;
 
   constructor(args: {
     apiKey: string;
@@ -542,13 +548,21 @@ export class StreamMonitor {
     // pattern (search.list every poll for every channel = 200 units/poll
     // × 1440 polls = 288k units/day) blew through it in ~50 min.
 
+    // While in YouTube quota backoff, skip the API entirely. Active
+    // sessions stay alive (no liveness check pings → no false offline
+    // signals); discovery resumes when the backoff expires. This is
+    // why we don't end sessions on isVideoLive() errors — exactly this
+    // case lets us soft-fail until quota resets.
+    if (Date.now() < this.youtubeBackoffUntil) return;
+
     // 1. Ping known active videos.
     for (const sess of activeForChannel) {
       let stillLive = false;
       try {
         stillLive = await this.isVideoLive(sess.videoId);
       } catch (err: any) {
-        console.warn(`[StreamMonitor] ${ch.tag} videos.list ${sess.videoId} failed: ${err.message}`);
+        if (this.handleYoutubeError(ch.tag, "videos.list", err)) return;
+        console.warn(`[StreamMonitor] ${ch.tag} videos.list ${sess.videoId} failed: ${err.message?.slice(0, 120)}`);
         // Don't end the session on a single API hiccup — let the OFFLINE
         // grace period handle it.
         continue;
@@ -580,7 +594,8 @@ export class StreamMonitor {
     try {
       discovered = await this.fetchLiveBroadcasts(ch.channelId);
     } catch (err: any) {
-      console.warn(`[StreamMonitor] ${ch.tag} discovery failed: ${err.message}`);
+      if (this.handleYoutubeError(ch.tag, "discovery", err)) return;
+      console.warn(`[StreamMonitor] ${ch.tag} discovery failed: ${err.message?.slice(0, 120)}`);
       return;
     }
 
@@ -595,10 +610,7 @@ export class StreamMonitor {
   private async isVideoLive(videoId: string): Promise<boolean> {
     const url = `${YOUTUBE_API}/videos?part=liveStreamingDetails&id=${videoId}&key=${this.apiKey}`;
     const res = await fetch(url);
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`YouTube ${res.status}: ${body.slice(0, 200)}`);
-    }
+    if (!res.ok) throw await youtubeError(res);
     const data = await res.json() as { items?: any[] };
     const item = data.items?.[0];
     if (!item) return false; // video deleted/private
@@ -609,13 +621,32 @@ export class StreamMonitor {
     return !details.actualEndTime;
   }
 
+  /** Detect quota-exhausted errors from YouTube and arm the global
+   *  backoff so subsequent polls skip the API. Returns true when the
+   *  caller should bail out of the current poll iteration (the error
+   *  has already been logged once). Returns false for other errors so
+   *  the caller can log them normally. */
+  private handleYoutubeError(channelTag: string, op: string, err: any): boolean {
+    const code = (err as YoutubeError).youtubeStatus;
+    const isQuota = code === 403 && /\bquota\b/i.test((err as YoutubeError).youtubeReason || err.message || "");
+    if (!isQuota) return false;
+    if (Date.now() < this.youtubeBackoffUntil) {
+      // Already backing off — don't re-log the same error every poll.
+      return true;
+    }
+    const BACKOFF_MS = 60 * 60_000; // 1h — quota resets at midnight PT
+    this.youtubeBackoffUntil = Date.now() + BACKOFF_MS;
+    const resumeAt = new Date(this.youtubeBackoffUntil).toISOString().slice(11, 16);
+    console.warn(
+      `[StreamMonitor] ${channelTag} ${op}: YouTube quota exhausted, backing off until ${resumeAt}Z (1h)`,
+    );
+    return true;
+  }
+
   private async fetchLiveBroadcasts(channelId: string): Promise<{ videoId: string; title: string }[]> {
     const url = `${YOUTUBE_API}/search?part=snippet&channelId=${channelId}&eventType=live&type=video&key=${this.apiKey}`;
     const res = await fetch(url);
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`YouTube ${res.status}: ${body.slice(0, 200)}`);
-    }
+    if (!res.ok) throw await youtubeError(res);
     const data = await res.json() as { items?: any[] };
     return (data.items ?? [])
       .filter((it) => it.id?.videoId)
@@ -844,6 +875,36 @@ export class StreamMonitor {
       console.error("[StreamMonitor] State persist failed:", err);
     }
   }
+}
+
+/** Error subclass that carries the YouTube HTTP status + reason code.
+ *  Lets `handleYoutubeError` distinguish quota-exhausted errors from
+ *  generic 4xx/5xx hiccups without parsing the message string. */
+class YoutubeError extends Error {
+  youtubeStatus: number;
+  youtubeReason: string;
+  constructor(message: string, status: number, reason: string) {
+    super(message);
+    this.youtubeStatus = status;
+    this.youtubeReason = reason;
+  }
+}
+
+/** Wrap a non-2xx YouTube response in a structured error. Parses the
+ *  error body just enough to surface the reason code (quotaExceeded,
+ *  rateLimitExceeded, etc.) without dumping the multi-line JSON into
+ *  logs. The full body is truncated to 120 chars for the .message. */
+async function youtubeError(res: Response): Promise<YoutubeError> {
+  const body = await res.text().catch(() => "");
+  let reason = "";
+  try {
+    const parsed = JSON.parse(body);
+    reason = parsed?.error?.errors?.[0]?.reason
+      ?? parsed?.error?.status
+      ?? "";
+  } catch { /* body wasn't JSON */ }
+  const message = `YouTube ${res.status}${reason ? ` (${reason})` : ""}: ${body.slice(0, 120).replace(/\s+/g, " ")}`;
+  return new YoutubeError(message, res.status, reason);
 }
 
 /** Pull player names out of a market label by reversing the templates
