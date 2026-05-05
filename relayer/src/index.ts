@@ -1253,28 +1253,6 @@ const streamMonitor = new StreamMonitor({
   onSnapshot: async (handleIdHex) => {
     await settlementEngine.settleLive(handleIdHex);
   },
-  // Hand-level real-time markets: seed fresh "Will X win hand #N?"
-  // markets for each in-hand player at the start of every new hand,
-  // settle them the moment a winner is declared on screen.
-  onHandStart: async (handleIdHex, sessionLabel, handIdx, players) => {
-    const { handLevelMarketsFor } = await import("./agent/marketTemplates");
-    const markets = handLevelMarketsFor(
-      sessionLabel,
-      handIdx,
-      players.map((name, i) => ({ seat: i + 1, name })),
-    );
-    console.log(`[handStart] ${sessionLabel} hand #${handIdx} seeding ${markets.length} market(s) for: ${players.join(", ")}`);
-    for (const m of markets) {
-      try {
-        await seedMarketUnderEvent(handleIdHex, m.marketIdHex, m.label);
-      } catch (err: any) {
-        console.warn(`[handStart] seed ${m.slug} failed: ${err.message?.slice(0, 160)}`);
-      }
-    }
-  },
-  onHandResolved: async (handleIdHex, _sessionLabel, handIdx, winners, _players) => {
-    await settlementEngine.settleHand(handleIdHex, handIdx, winners);
-  },
 });
 streamMonitor.start();
 
