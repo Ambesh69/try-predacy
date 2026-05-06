@@ -5,11 +5,15 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { EventDescriptor, formatUsdc6, listEvents } from "@/lib/lpApi";
 import EventPicker from "@/components/EventPicker";
-import LPDepositForm from "@/components/LPDepositForm";
-import LPPositionsList from "@/components/LPPositionsList";
 
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+// LPDepositForm + LPPositionsList both use Privy hooks unconditionally
+// — load via dynamic import with ssr:false so a server render under a
+// Privy-less env doesn't crash. PrivyGated wrappers handle the
+// env-var-missing case (local dev without NEXT_PUBLIC_PRIVY_APP_ID).
+const LPDepositForm = dynamic(() => import("@/components/LPDepositForm"), { ssr: false });
+const LPPositionsList = dynamic(() => import("@/components/LPPositionsList"), { ssr: false });
 
 export default function LPPage() {
   const [selected, setSelected] = useState<EventDescriptor | null>(null);
@@ -73,38 +77,46 @@ export default function LPPage() {
 
       {/* Hero */}
       <section className="border-b border-card-border bg-bg-elevated">
-        <div className="max-w-7xl mx-auto px-4 py-10 grid md:grid-cols-2 gap-8 items-end">
+        <div className="max-w-7xl mx-auto px-4 py-10 grid md:grid-cols-[1fr_auto] gap-8 items-end">
           <div>
-            <p className="text-[11px] tracking-widest uppercase text-accent mb-2">
-              The Stack
-            </p>
-            <h1 className="text-[32px] md:text-[40px] leading-tight font-bold text-text">
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <span className="text-[10px] tracking-widest uppercase text-accent border border-accent/30 bg-accent/5 px-2 py-0.5">
+                Liquidity Stack
+              </span>
+              <span className="text-[10px] tracking-widest uppercase text-muted-dim border border-border-bright px-2 py-0.5">
+                Tier 0 LMSR
+              </span>
+              <span className="text-[10px] tracking-widest uppercase text-muted-dim border border-border-bright px-2 py-0.5">
+                Tier 1 Blind LP · FHE
+              </span>
+              <span className="text-[10px] tracking-widest uppercase text-muted-dim border border-border-bright px-2 py-0.5">
+                Tier 2 Maker Rebates
+              </span>
+            </div>
+            <h1 className="text-[32px] md:text-[44px] leading-tight font-bold text-text">
               Provide liquidity for sealed-bid prediction markets.
             </h1>
-            <p className="text-[12px] text-muted mt-3 max-w-xl">
-              Deposit USDC under an event, earn a pro-rata share of taker fees +
-              spread for every batch in that event. Capital auto-refunds at
-              event close.
-            </p>
-            <p className="text-[11px] text-accent mt-4">
-              Blind LP enabled by default — your individual allocation is
-              FHE-encrypted on-chain. Aggregate vault balance stays public.
+            <p className="text-[12px] text-muted mt-3 max-w-xl leading-relaxed">
+              Deposit USDC under an event, earn a pro-rata share of taker fees
+              and spread for every batch settled under it. Your individual
+              allocation is FHE-encrypted on-chain — only the aggregate vault
+              is public. Capital auto-refunds at event close.
             </p>
           </div>
           {stackStats && (
-            <div className="grid grid-cols-3 gap-3 text-[10px]">
+            <div className="grid grid-cols-3 gap-px bg-card-border min-w-[420px]">
               <StackStat
                 label="Active events"
                 value={String(stackStats.activeEvents)}
               />
               <StackStat
                 label="Cumulative volume"
-                value={`$${formatUsdc6(stackStats.totalCapital)}`}
+                value={`$${formatUsdc6(stackStats.totalCapital, 0)}`}
               />
               <StackStat
                 label="Graduated"
                 value={`${stackStats.graduated} / ${stackStats.activeEvents}`}
-                hint="Tier 1 backstop active"
+                hint={stackStats.graduated > 0 ? "Tier 1 backstops live" : "Pre-grad"}
               />
             </div>
           )}
@@ -115,26 +127,67 @@ export default function LPPage() {
       <main className="max-w-7xl mx-auto px-4 py-8 grid md:grid-cols-2 gap-6">
         <div className="space-y-4">
           <EventPicker selected={selected} onSelect={setSelected} />
-          <LPDepositForm
+          <PrivyGatedLPDeposit
             event={selected}
             onDeposited={() => setRefreshKey((k) => k + 1)}
           />
           <LiquidityStackBreakdown event={selected} />
         </div>
         <div className="space-y-4">
-          <LPPositionsList refreshKey={refreshKey} />
+          <PrivyGatedLPPositions refreshKey={refreshKey} />
           <RebatesExplainer />
         </div>
       </main>
 
       <footer className="border-t border-card-border mt-12">
-        <div className="max-w-7xl mx-auto px-4 py-4 text-[10px] text-muted">
-          Predacy Liquidity Stack · Tier 0 LMSR · Tier 1 Blind LP · Tier 2
-          Maker Rebates · See <Link href="/docs/LIQUIDITY.md" className="text-accent hover:underline">design doc</Link>
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between text-[10px] text-muted">
+          <span>
+            Predacy Liquidity Stack · Tier 0 LMSR · Tier 1 Blind LP · Tier 2 Maker Rebates
+          </span>
+          <span className="text-muted-dim">
+            <span className="text-accent/60">●</span> Per-LP allocation FHE-encrypted on-chain
+          </span>
         </div>
       </footer>
     </div>
   );
+}
+
+/** Wraps LPDepositForm so it only renders when Privy is configured.
+ *  Without this guard the underlying useSolanaWallets() reads
+ *  .connectors on a null context and crashes the page (same pattern
+ *  as OrderForm's gate on the event detail page). */
+function PrivyGatedLPDeposit(props: {
+  event: EventDescriptor | null;
+  onDeposited: () => void;
+}) {
+  const privyConfigured = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  if (!privyConfigured) {
+    return (
+      <div className="border border-card-border bg-card p-5 text-[11px] text-muted-dim leading-snug space-y-2">
+        <p className="text-[11px] tracking-widest uppercase text-accent">Provide liquidity</p>
+        <p>
+          Wallet connection isn&apos;t configured in this environment.
+          Set <code className="text-accent">NEXT_PUBLIC_PRIVY_APP_ID</code> to enable
+          deposits.
+        </p>
+      </div>
+    );
+  }
+  return <LPDepositForm {...props} />;
+}
+
+function PrivyGatedLPPositions(props: { refreshKey: number }) {
+  const privyConfigured = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  if (!privyConfigured) {
+    return (
+      <div className="border border-card-border bg-card p-5 text-[11px] text-muted-dim leading-snug space-y-2">
+        <p className="text-[11px] tracking-widest uppercase text-accent">Your positions</p>
+        <p>Connect a wallet to see deposits and accrued rebates.</p>
+      </div>
+    );
+  }
+  return <LPPositionsList {...props} />;
 }
 
 function StackStat({
@@ -147,10 +200,12 @@ function StackStat({
   hint?: string;
 }) {
   return (
-    <div className="border border-card-border bg-card p-3">
+    <div className="bg-bg p-4 flex flex-col justify-between min-h-[88px]">
       <p className="text-[9px] tracking-widest uppercase text-muted">{label}</p>
-      <p className="text-text font-mono text-[16px] mt-1 truncate">{value}</p>
-      {hint && <p className="text-[9px] text-muted-dim mt-1">{hint}</p>}
+      <div>
+        <p className="text-text font-mono text-[22px] tabular-nums leading-none">{value}</p>
+        {hint && <p className="text-[9px] text-muted-dim mt-1.5 tracking-wider uppercase">{hint}</p>}
+      </div>
     </div>
   );
 }
