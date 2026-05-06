@@ -38,6 +38,13 @@ export interface Player {
   seat: number;
   /** Player name as read from the nameplate. Unicode-safe. */
   name: string;
+  /** Unix-seconds the player was most recently observed in any
+   *  lineup extraction for their session. Used by the streamMonitor
+   *  to prune stale players that haven't been seen in N hours
+   *  (rotating-table cleanup). Undefined for legacy persisted lineups
+   *  loaded from disk; the monitor treats those as "seen now" on
+   *  first read so we don't immediately TTL-drop the whole lineup. */
+  lastSeenAt?: number;
 }
 
 export interface Lineup {

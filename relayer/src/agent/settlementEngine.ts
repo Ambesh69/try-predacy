@@ -309,18 +309,21 @@ export class SettlementEngine {
   private client: SolanaClient;
   private ledger: EventLedger;
   private stats: SessionStats;
-  /** Tracks which marketIds we've already resolved so we don't keep
-   *  retrying on every live tick. The on-chain check in resolve_market
-   *  is also a safety net (MarketAlreadyResolved) but this avoids the
-   *  RPC roundtrip + log noise. Not persisted yet — relayer restart
-   *  will trigger one redundant settle attempt per market that lands
-   *  with MarketAlreadyResolved. */
-  private resolved: Set<string> = new Set();
 
   constructor(client: SolanaClient, ledger: EventLedger, stats: SessionStats) {
     this.client = client;
     this.ledger = ledger;
     this.stats = stats;
+  }
+
+  /** True when the EventLedger already records a resolution for this
+   *  marketId under this handle. The ledger persists to disk, so this
+   *  becomes the de-facto resolved-set across relayer restarts — no
+   *  parallel in-memory Set to keep in sync, no MarketAlreadyResolved
+   *  log noise on the first tick after a redeploy. */
+  private isAlreadyResolved(handleHex: string, marketIdHex: string): boolean {
+    const ev = this.ledger.get(handleHex);
+    return !!ev?.resolutions?.[marketIdHex];
   }
 
   /** Live trigger — call after each gameState snapshot. Settles only
@@ -358,31 +361,33 @@ export class SettlementEngine {
     const applied: PendingResolution[] = [];
     for (const p of pending) {
       const outcomeStr: "YES" | "NO" = p.outcome === 1 ? "YES" : "NO";
-      // Always reflect the resolution into the EventLedger — even when
-      // we're in the in-memory cache. This handles the case where the
-      // ledger schema gained `resolutions` after the on-chain settle
-      // already happened: the engine knows the outcome, the ledger
-      // didn't, this back-fills it. Idempotent thanks to
-      // setMarketResolution's prior-equals check.
+      // Snapshot the prior resolved-state BEFORE writing the ledger;
+      // otherwise our own setMarketResolution below makes
+      // isAlreadyResolved() return true and we'd skip the on-chain
+      // RPC the first time we ever see this market.
+      const wasAlreadyResolved = this.isAlreadyResolved(handleHex, p.marketIdHex);
+
+      // Always reflect the resolution into the EventLedger. Idempotent
+      // thanks to setMarketResolution's prior-equals check. Also
+      // back-fills cases where the ledger schema gained `resolutions`
+      // after the on-chain settle already happened.
       try {
         this.ledger.setMarketResolution(handleHex, p.marketIdHex, outcomeStr);
       } catch { /* unknown handle — surfaced earlier */ }
 
-      if (this.resolved.has(p.marketIdHex)) continue;
+      if (wasAlreadyResolved) continue;
       try {
         const marketIdBuf = Buffer.from(p.marketIdHex.replace(/^0x/, ""), "hex");
         await this.client.resolveMarket(marketIdBuf, p.outcome);
-        this.resolved.add(p.marketIdHex);
         console.log(
           `[Settlement] ${trigger} resolved ${p.marketIdHex.slice(0, 8)}… (${p.classified?.kind}) → ${outcomeStr} — ${p.reason}`,
         );
         applied.push(p);
       } catch (err: any) {
         const msg = String(err?.message || "");
-        // Already resolved on-chain — cache it. The ledger write
-        // above already ran so the UI is up to date.
+        // Already resolved on-chain — silently move on. The ledger
+        // write above already ran so the UI is up to date.
         if (msg.includes("MarketAlreadyResolved") || msg.includes("already resolved")) {
-          this.resolved.add(p.marketIdHex);
           continue;
         }
         console.warn(`[Settlement] ${p.marketIdHex.slice(0, 8)}… resolve failed: ${msg.slice(0, 160)}`);

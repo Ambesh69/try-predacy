@@ -427,12 +427,18 @@ export class StreamMonitor {
       session.lineup = cleaned;
     }
 
+    // TTL prune + lastSeenAt touch on every captured player. Same as
+    // recheckLineup, but applied here too so a manual refresh also
+    // sheds stale players.
+    pruneStaleAndTouch(session, lineup.players, Math.floor(Date.now() / 1000));
+
     const oldKeys = new Set(session.lineup.map((p) => canonicalize(p.name)));
     const entrants = lineup.players.filter((p) => !oldKeys.has(canonicalize(p.name)));
 
     let reseededPlayers: string[] | undefined;
     let droppedMarketIds: string[] | undefined;
 
+    const refreshNow = Math.floor(Date.now() / 1000);
     if (mode === "reseed") {
       // Idempotently re-run newEntrantMarketsFor for every player we've
       // ever associated with this session (cleaned session.lineup ∪
@@ -464,7 +470,7 @@ export class StreamMonitor {
       reseededPlayers = seedTargets.map((p) => p.name);
       // Fold in any genuine entrants too so session.lineup grows.
       if (entrants.length > 0) {
-        session.lineup = [...session.lineup, ...entrants];
+        session.lineup = [...session.lineup, ...entrants.map((p) => ({ ...p, lastSeenAt: refreshNow }))];
         session.lineupHash = lineupHash(session.lineup);
       }
     } else if (mode === "replace") {
@@ -503,7 +509,7 @@ export class StreamMonitor {
         }
       }
       // Replace session.lineup outright with the fresh capture.
-      session.lineup = [...lineup.players];
+      session.lineup = lineup.players.map((p) => ({ ...p, lastSeenAt: refreshNow }));
       session.lineupHash = lineupHash(session.lineup);
     } else {
       // additive (default) — original behaviour
@@ -517,7 +523,7 @@ export class StreamMonitor {
             await this.safeSeed(session.handleIdHex, m);
           }
         }
-        session.lineup = [...session.lineup, ...entrants];
+        session.lineup = [...session.lineup, ...entrants.map((p) => ({ ...p, lastSeenAt: refreshNow }))];
         session.lineupHash = lineupHash(session.lineup);
       } else {
         console.log(
@@ -728,6 +734,17 @@ export class StreamMonitor {
     const lineup = await this.extractor.extract(session.videoId);
     if (!lineup || !lineup.confident || lineup.players.length === 0) return;
 
+    const now = Math.floor(Date.now() / 1000);
+
+    // Touch lastSeenAt for everyone in the new capture before we do
+    // entrant detection — keeps re-seen players "fresh" so the TTL
+    // pruner below doesn't drop them. Also sweeps stale entries out
+    // of session.lineup that haven't been observed in HOURS — fixes
+    // the bloat where Triton's lineup grew to 30 entries from
+    // accumulated history (real Triton regulars who played for one
+    // session and never returned).
+    pruneStaleAndTouch(session, lineup.players, now);
+
     const oldNames = new Set(session.lineup.map((p) => p.name.toLowerCase()));
     const newNames = new Set(lineup.players.map((p) => p.name.toLowerCase()));
 
@@ -769,9 +786,10 @@ export class StreamMonitor {
 
     // Grow the session's lineup with the new entrants — keep the prior
     // players too since they're still part of this session even if they
-    // weren't in any of the just-sampled frames.
+    // weren't in any of the just-sampled frames. Stamp lastSeenAt on
+    // the new entrants so they enter the TTL window.
     const merged = [...session.lineup];
-    for (const p of entrants) merged.push(p);
+    for (const p of entrants) merged.push({ ...p, lastSeenAt: now });
     session.lineup = merged;
     session.lineupHash = lineupHash(merged);
   }
@@ -805,7 +823,7 @@ export class StreamMonitor {
       videoId: v.videoId,
       videoTitle: v.title,
       handleIdHex: created.handleIdHex,
-      lineup: lineup.players,
+      lineup: lineup.players.map((p) => ({ ...p, lastSeenAt: now })),
       lineupHash: lineup.hash,
       startedAt: now,
       lastSeenAt: now,
@@ -950,6 +968,56 @@ function playerNamesReferencedByLabel(label: string): string[] {
   const h2hPot = label.match(/^Will (.+?) win a bigger pot than (.+?) tonight\?$/);
   if (h2hPot) return [h2hPot[1].trim(), h2hPot[2].trim()];
   return [];
+}
+
+/** Time-to-live for a player in session.lineup. Real Triton/HCL
+ *  sessions average 4-6 hours; players who sit one game and leave
+ *  (or were one-shot OCR misreads) shouldn't pollute the lineup
+ *  forever. 4h is conservative — short enough to clean accumulated
+ *  history (Triton's lineup grew to 30 entries from week-old reruns)
+ *  but long enough to survive normal mid-session bathroom breaks. */
+const PLAYER_TTL_SEC = 4 * 60 * 60;
+
+/** Bump lastSeenAt for every captured player still in the lineup, then
+ *  drop anyone whose lastSeenAt is older than PLAYER_TTL_SEC. Idempotent
+ *  — safe to call from recheckLineup AND forceRefresh, both of which
+ *  observe the same fresh capture. Mutates session.lineup in place.
+ *
+ *  Players in session.lineup with no lastSeenAt (loaded from disk pre-
+ *  TTL deploy) are stamped with `now` so they get a fresh window
+ *  rather than being TTL-dropped on first read. */
+function pruneStaleAndTouch(
+  session: { lineup: Player[]; sessionLabel: string; channelTag: string },
+  freshlyCaptured: Player[],
+  now: number,
+): void {
+  const canon = (s: string): string =>
+    s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
+  const freshKeys = new Set(freshlyCaptured.map((p) => canon(p.name)));
+  const before = session.lineup.length;
+  const dropped: string[] = [];
+
+  const updated: Player[] = [];
+  for (const p of session.lineup) {
+    const seenNow = freshKeys.has(canon(p.name));
+    const lastSeen = p.lastSeenAt ?? now; // legacy entries get a free pass
+    if (seenNow) {
+      updated.push({ ...p, lastSeenAt: now });
+      continue;
+    }
+    if (now - lastSeen > PLAYER_TTL_SEC) {
+      dropped.push(p.name);
+      continue;
+    }
+    updated.push({ ...p, lastSeenAt: lastSeen });
+  }
+  session.lineup = updated;
+
+  if (dropped.length > 0) {
+    console.log(
+      `[StreamMonitor] ${session.channelTag} ${session.sessionLabel} TTL-dropped ${dropped.length} stale player(s): ${dropped.slice(0, 6).join(", ")}${dropped.length > 6 ? ", …" : ""} (lineup ${before} → ${updated.length})`,
+    );
+  }
 }
 
 /** Match the lineupExtractor's placeholder filter so refresh can also
