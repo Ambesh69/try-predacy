@@ -22,6 +22,7 @@ import {
   OrderSide,
   MarketState,
   BATCH_WINDOW_MS,
+  HAND_LEVEL_BATCH_WINDOW_MS,
   MAX_BATCH_ORDERS,
   MAX_BATCH_USD,
   PRICE_DECIMALS,
@@ -138,6 +139,15 @@ export class BatchProcessor {
       return;
     }
 
+    // Detect hand-level markets via their label format and shorten the
+    // batch window — fits the "1-3 min hand" cadence without leaking
+    // the 30s sealed-bid window we use for session-level markets.
+    const ledger = getEventLedger();
+    const ev = ledger.findEventForMarket(key);
+    const label = ev?.marketLabels?.[key] ?? "";
+    const isHandLevel = /^Will .+ win hand #\d+\?$/.test(label);
+    const batchWindowMsOverride = isHandLevel ? HAND_LEVEL_BATCH_WINDOW_MS : undefined;
+
     const state: MarketState = {
       marketId,
       currentBatchId: null,
@@ -150,6 +160,7 @@ export class BatchProcessor {
       batchOpenedAt: Math.floor(Date.now() / 1000),
       settlingStartedAt: 0,
       orders: new Map(),
+      batchWindowMsOverride,
     };
 
     this.markets.set(key, state);
@@ -211,10 +222,13 @@ export class BatchProcessor {
     const existingTimer = this.timers.get(marketKey);
     if (existingTimer) clearTimeout(existingTimer);
 
-    // Add 5s buffer to account for Solana clock skew vs local timer
+    // Per-market window override (hand-level = 10s; default = 30s).
+    // Add 5s buffer to account for Solana clock skew vs local timer.
+    const state = this.markets.get(marketKey);
+    const windowMs = state?.batchWindowMsOverride ?? BATCH_WINDOW_MS;
     const timer = setTimeout(async () => {
       await this.closeBatch(marketKey, batchIndex);
-    }, BATCH_WINDOW_MS + 5_000);
+    }, windowMs + 5_000);
 
     this.timers.set(marketKey, timer);
   }

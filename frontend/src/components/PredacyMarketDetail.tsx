@@ -15,6 +15,7 @@ import BatchTimer from "@/components/BatchTimer";
 
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 
 interface Props {
   params: Promise<{ marketId: string }>;
@@ -218,6 +219,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <ClaimsWidget />
             <HeaderBalance />
             <WalletButton />
           </div>

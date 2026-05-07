@@ -10,6 +10,7 @@ import WalletButton from "@/components/WalletButton";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 import PriceChart from "@/components/PriceChart";
 import OrderbookPanel from "@/components/OrderbookPanel";
 import PositionsPanel from "@/components/PositionsPanel";
@@ -330,6 +331,7 @@ export default function EventPageClient({ params }: { params: Promise<{ id: stri
           <Link href="/" className="text-xl font-black tracking-tight text-text" style={{ fontFamily: "var(--font-display)" }}>PREDACY</Link>
         </div>
         <div className="flex items-center gap-3">
+          <ClaimsWidget />
           <HeaderBalance />
           <FaucetButton />
           <WalletButton />

@@ -52,6 +52,12 @@ export interface MarketState {
   batchOpenedAt: number;      // unix seconds when current batch opened
   settlingStartedAt: number;  // unix seconds when settling began (0 if not settling)
   orders: Map<string, Order>; // commitment hash → order
+  /** Per-market batch window override. Hand-level markets ("Will X
+   *  win hand #N?") use 10s so the trading window doesn't eat the
+   *  whole hand; session/H2H markets keep the default 30s where
+   *  privacy + frontrunning protection matter more than speed.
+   *  Falls back to BATCH_WINDOW_MS when undefined. */
+  batchWindowMsOverride?: number;
 }
 
 // ─── Claim Job ───
@@ -82,5 +88,10 @@ export interface Groth16Proof {
 
 export const PRICE_DECIMALS = 1_000_000n;
 export const BATCH_WINDOW_MS = 30_000;
+/** Tighter batch window for hand-level markets — a poker hand lasts
+ *  60-180s, so a 30s sealed-bid window eats half the trading time. 10s
+ *  keeps the privacy/frontrunning guarantee while feeling closer to
+ *  Pumpcade's "instant" cadence on short-duration markets. */
+export const HAND_LEVEL_BATCH_WINDOW_MS = 10_000;
 export const MAX_BATCH_ORDERS = 8; // circuit limit
 export const MAX_BATCH_USD = 5_000_000_000n; // $5,000 in 6-dec

@@ -8,6 +8,7 @@ import EventPicker from "@/components/EventPicker";
 
 const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 // LPDepositForm + LPPositionsList both use Privy hooks unconditionally
 // — load via dynamic import with ssr:false so a server render under a
 // Privy-less env doesn't crash. PrivyGated wrappers handle the
@@ -69,6 +70,7 @@ export default function LPPage() {
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <ClaimsWidget />
             <HeaderBalance />
             <WalletButton />
           </div>

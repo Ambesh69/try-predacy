@@ -1734,6 +1734,90 @@ app.delete("/events/:handleIdHex/markets", (req, res) => {
  * relying on Polymarket data.
  */
 /**
+ * GET /claims/:userPubkey
+ * Scan every resolved market in the EventLedger and return the ones
+ * where the user holds the winning side's token. Each entry includes
+ * a pre-built unsigned redeem tx (base64) so the frontend can sign +
+ * submit without an extra round-trip — the auto-claim UX equivalent
+ * of Pumpcade's instant payout, modulo the user's signature.
+ *
+ * Response shape:
+ *   { ok: true, claims: [
+ *       { marketId, eventLabel, marketLabel, outcome, amount, txBase64 },
+ *       ...
+ *     ]
+ *   }
+ *
+ * 200 with claims=[] when nothing redeemable. Errors propagate as 5xx.
+ */
+app.get("/claims/:userPubkey", async (req, res) => {
+  try {
+    const userKey = new PublicKey(req.params.userPubkey);
+    const { getAssociatedTokenAddressSync, getAccount } = await import("@solana/spl-token");
+    const protocolCfg = await client.fetchProtocolConfig();
+    const usdcMint = (protocolCfg as any).usdcMint as PublicKey;
+    const usdcAta = getAssociatedTokenAddressSync(usdcMint, userKey, true);
+    const conn = client.getConnection();
+    const { blockhash } = await conn.getLatestBlockhash("confirmed");
+
+    const claims: Array<{
+      marketId: string;
+      eventHandleId: string;
+      eventLabel: string | null;
+      marketLabel: string | null;
+      outcome: "YES" | "NO";
+      amount: string;
+      txBase64: string;
+    }> = [];
+
+    for (const ev of eventLedger.list()) {
+      if (!ev.resolutions) continue;
+      for (const [marketIdHex, outcome] of Object.entries(ev.resolutions)) {
+        const marketIdBuf = Buffer.from(marketIdHex, "hex");
+        const winningMint = (outcome === "YES"
+          ? client.yesMintPda(marketIdBuf)
+          : client.noMintPda(marketIdBuf))[0];
+        const userTokenAccount = getAssociatedTokenAddressSync(winningMint, userKey, true);
+        let amount = 0n;
+        try {
+          const acc = await getAccount(conn, userTokenAccount);
+          amount = BigInt(acc.amount.toString());
+        } catch { /* user has no ATA on this side — skip */ }
+        if (amount === 0n) continue;
+
+        const tx = await client.buildRedeemOutcomeTx({
+          marketId: marketIdBuf,
+          user: userKey,
+          userTokenAccount,
+          userUsdcAccount: usdcAta,
+          winningMint,
+          amount,
+        });
+        tx.recentBlockhash = blockhash;
+        const txBase64 = tx
+          .serialize({ requireAllSignatures: false, verifySignatures: false })
+          .toString("base64");
+
+        claims.push({
+          marketId: marketIdHex,
+          eventHandleId: ev.handleId,
+          eventLabel: ev.label ?? null,
+          marketLabel: ev.marketLabels?.[marketIdHex] ?? null,
+          outcome,
+          amount: amount.toString(),
+          txBase64,
+        });
+      }
+    }
+
+    res.json({ ok: true, count: claims.length, claims });
+  } catch (err: any) {
+    console.error("[GET /claims/:userPubkey] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /market/:marketIdHex/lmsr
  * Surface the on-chain BootstrapPool state + the LMSR's current
  * marginal-YES price (the anchor BatchProcessor will use on the next

@@ -10,6 +10,7 @@ import { useLiveEvents } from "@/lib/useLiveEvents";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 import CommitmentFeed from "@/components/CommitmentFeed";
 import { OrderForm } from "@/components/OrderForm";
 import PriceChart from "@/components/PriceChart";
@@ -167,6 +168,7 @@ export function MarketPageClient({ params }: { params: Promise<{ id: string }> }
         <h1 className="text-lg font-black text-text tracking-tight leading-tight"
           style={{ fontFamily: "var(--font-display)" }}>PREDACY</h1>
         <div className="ml-auto flex items-center gap-3">
+          <ClaimsWidget />
           <HeaderBalance />
           <FaucetButton />
           <WalletButton compact />

@@ -17,6 +17,7 @@ const WalletButton = dynamic(() => import("@/components/WalletButton"), { ssr: f
 // doesn't crash. The PrivyGated wrapper still guards the env-var case.
 const RedeemActionButton = dynamic(() => import("@/components/RedeemActionButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 
 interface Props {
   params: Promise<{ handleId: string }>;
@@ -241,6 +242,7 @@ function PageShell({ children }: { children: React.ReactNode }) {
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <ClaimsWidget />
             <HeaderBalance />
             <WalletButton />
           </div>

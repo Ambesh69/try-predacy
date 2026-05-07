@@ -8,6 +8,7 @@ import WalletButton from "@/components/WalletButton";
 
 const FaucetButton = dynamic(() => import("@/components/FaucetButton"), { ssr: false });
 const HeaderBalance = dynamic(() => import("@/components/HeaderBalance"), { ssr: false });
+const ClaimsWidget = dynamic(() => import("@/components/ClaimsWidget"), { ssr: false });
 import { MOCK_MARKETS, getEvents, type PolyEvent } from "@/lib/polymarket";
 import { getRelayerUrl } from "@/lib/relayerUrl";
 import { listEvents, type EventDescriptor } from "@/lib/lpApi";
@@ -165,6 +166,7 @@ export default function HomePage() {
             <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
             <span className="text-[11px] text-muted tracking-widest">SOLANA</span>
           </div>
+          <ClaimsWidget />
           <HeaderBalance />
           <FaucetButton />
           <WalletButton />
