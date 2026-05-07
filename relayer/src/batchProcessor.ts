@@ -330,12 +330,32 @@ export class BatchProcessor {
       //    strict → FHE clearing via encryptedClearing.ts (relayer never
       //             sees per-order plaintext; only aggregate outputs get
       //             decrypted). See fheBackend.ts + encryptedClearing.ts.
+      //
+      // Tier 0 LMSR price anchor — when the bootstrap pool exists and is
+      // not yet graduated, its marginal price drives the clearing price
+      // directly. The LMSR is the protocol's counterparty for residuals,
+      // so its price IS the fair price of the next unit. Each settled
+      // batch updates the pool, which re-anchors the next batch's
+      // price → real-time price discovery across batches without
+      // matched counter-orders. Falls through to legacy candidate-search
+      // when the pool isn't init'd or has graduated to Tier 1.
       let fheStats: { backend: string; opCount: number; elapsedMs: number } | null = null;
-      const result = computeClearingPrice(orderList);
+      const lmsrAnchor = await this.maybeLmsrAnchor(state.marketId);
+      const result = computeClearingPrice(orderList, lmsrAnchor);
+      if (lmsrAnchor !== null) {
+        console.log(
+          `[BatchProcessor] Tier 0 LMSR anchor: ${lmsrAnchor} (${(Number(lmsrAnchor) / 10000).toFixed(2)}¢ YES) — clearing locked here`,
+        );
+      }
       if (this.privacyMode === "strict") {
         const backend = selectFheBackend(this.fheBackendName);
         const encOrders = orderList.map((o) => encryptOrder(backend, o));
+        // Inject the LMSR anchor into the candidate set so the FHE path's
+        // best-price search can pick it (otherwise the consistency check
+        // below trips on every batch where the plaintext path used the
+        // anchor and FHE didn't see it as a candidate).
         const candidates = candidatePricesFromPlaintext(orderList);
+        if (lmsrAnchor !== null && !candidates.includes(lmsrAnchor)) candidates.push(lmsrAnchor);
         const strictResult = computeEncryptedClearing(backend, encOrders, candidates);
         console.log(
           `[BatchProcessor] STRICT mode cleared: price=${strictResult.clearingPrice} ` +
@@ -733,6 +753,38 @@ export class BatchProcessor {
   /** Return the matched-pair / CLOB-routing breakdown for a settled batch. */
   getSettlementStats(batchId: bigint): BatchSettlementStats | undefined {
     return this.settlementStats.get(batchId.toString());
+  }
+
+  /** Read the LS-LMSR bootstrap pool's current marginal-YES price as a
+   *  6-decimal bigint, or null when the pool isn't init'd / has
+   *  graduated. Used as the clearing-price anchor (Tier 0 price
+   *  discovery, docs/LIQUIDITY.md §5.1). Failures are silent — the
+   *  caller falls back to legacy candidate-search clearing. */
+  private async maybeLmsrAnchor(marketId: Buffer): Promise<bigint | null> {
+    try {
+      const pool: any = await this.client.fetchBootstrapPool(marketId);
+      if (pool.graduated) return null;
+      const { marginalPrice } = await import("./bootstrapCurve");
+      const yesPrice = marginalPrice(
+        {
+          currentQ: BigInt(pool.currentQ.toString()),
+          bParam: BigInt(pool.bParam.toString()),
+          yesShares: BigInt(pool.yesShares.toString()),
+          noShares: BigInt(pool.noShares.toString()),
+        },
+        "yes",
+      );
+      // Clamp to (0, 1_000_000) — boundary prices break order matching
+      // (everyone fills or nobody does, depending on side).
+      const microPrice = BigInt(Math.round(yesPrice * 1_000_000));
+      const clamped =
+        microPrice <= 0n ? 1n :
+        microPrice >= 1_000_000n ? 999_999n :
+        microPrice;
+      return clamped;
+    } catch {
+      return null;
+    }
   }
 
   /** Return all settled batches' stats, newest first. Bounded to last 50. */
