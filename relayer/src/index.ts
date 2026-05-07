@@ -1733,6 +1733,52 @@ app.delete("/events/:handleIdHex/markets", (req, res) => {
  * The trading UI uses this to render the market detail page without
  * relying on Polymarket data.
  */
+/**
+ * GET /market/:marketIdHex/lmsr
+ * Surface the on-chain BootstrapPool state + the LMSR's current
+ * marginal-YES price (the anchor BatchProcessor will use on the next
+ * batch). Returns 404 when the pool isn't init'd, 410 when it's
+ * graduated to Tier 1. Used to verify Tier 0 price discovery without
+ * waiting for a settled batch.
+ */
+app.get("/market/:marketIdHex/lmsr", async (req, res) => {
+  try {
+    const marketIdHex = req.params.marketIdHex.toLowerCase().replace(/^0x/, "");
+    const marketIdBuf = Buffer.from(marketIdHex, "hex");
+    let pool: any;
+    try {
+      pool = await client.fetchBootstrapPool(marketIdBuf);
+    } catch {
+      return res.status(404).json({ error: "bootstrap pool not initialised for this market" });
+    }
+    if (pool.graduated) {
+      return res.status(410).json({ error: "pool graduated to Tier 1", graduated: true });
+    }
+    const { marginalPrice } = await import("./bootstrapCurve");
+    const state = {
+      currentQ: BigInt(pool.currentQ.toString()),
+      bParam: BigInt(pool.bParam.toString()),
+      yesShares: BigInt(pool.yesShares.toString()),
+      noShares: BigInt(pool.noShares.toString()),
+    };
+    const yesProb = marginalPrice(state, "yes");
+    res.json({
+      marketId: marketIdHex,
+      currentQ: state.currentQ.toString(),
+      bParam: state.bParam.toString(),
+      yesShares: state.yesShares.toString(),
+      noShares: state.noShares.toString(),
+      marginalYesProb: yesProb,
+      marginalYesCents: Math.round(yesProb * 100),
+      anchorMicroPrice: Math.round(yesProb * 1_000_000),
+      graduated: false,
+    });
+  } catch (err: any) {
+    console.error("[GET /market/:id/lmsr] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/market/:marketIdHex", (req, res) => {
   const marketIdHex = req.params.marketIdHex.toLowerCase().replace("0x", "");
   for (const ev of eventLedger.list()) {
