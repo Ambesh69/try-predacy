@@ -49,6 +49,7 @@ export type Classified =
   | { kind: "most-hands"; player: string }
   | { kind: "h2h-bluff"; a: string; b: string }
   | { kind: "h2h-pot"; a: string; b: string }
+  | { kind: "hand-winner"; player: string; handIdx: number }
   | null;
 
 export function classifyMarketLabel(label: string): Classified {
@@ -82,6 +83,10 @@ export function classifyMarketLabel(label: string): Classified {
   if (m) return { kind: "h2h-bluff", a: m[1].trim(), b: m[2].trim() };
   m = label.match(/^Will (.+?) win a bigger pot than (.+?) tonight\?$/);
   if (m) return { kind: "h2h-pot", a: m[1].trim(), b: m[2].trim() };
+
+  // ─── Hand-level templates ──────────────────────────────────────────
+  m = label.match(/^Will (.+?) win hand #(\d+)\?$/);
+  if (m) return { kind: "hand-winner", player: m[1].trim(), handIdx: parseInt(m[2], 10) };
 
   return null;
 }
@@ -202,6 +207,11 @@ export function computeResolutions(
   for (const [marketIdHex, label] of Object.entries(ev.marketLabels)) {
     const c = classifyMarketLabel(label);
     if (!c) continue;
+    // Hand-winner markets are settled by settleHand() with the actual
+    // hand winner — they don't have a session-end fallback resolution
+    // (an unresolved hand market just stays open forever, which is
+    // fine since the hand never actually resolved on-stream).
+    if (c.kind === "hand-winner") continue;
 
     const push = (outcome: Outcome, reason: string) => {
       out.push({ marketIdHex, label, classified: c, outcome, reason });
@@ -338,6 +348,72 @@ export class SettlementEngine {
    *  the event using the final session stats. */
   async settleEnd(handleHex: string): Promise<PendingResolution[]> {
     return this.settle(handleHex, "end");
+  }
+
+  /** Settle every hand-winner market for a specific hand. Called
+   *  immediately after the gameState OCR sees winnerPlayers populated
+   *  while a hand is open. Winners get YES, everyone else (whose
+   *  market exists for this handIdx) gets NO. Idempotent — already-
+   *  resolved markets are skipped via the in-memory cache + the
+   *  on-chain MarketAlreadyResolved guard.
+   *
+   *  Compares names via canon() so OCR casing/punctuation differences
+   *  ("airball" vs "AIRBALL", "ST. WANG" vs "ST WANG") don't cause
+   *  false NOs. */
+  async settleHand(
+    handleHex: string,
+    handIdx: number,
+    winners: string[],
+  ): Promise<PendingResolution[]> {
+    const ev = this.ledger.get(handleHex);
+    if (!ev?.marketLabels) return [];
+    const winnerKeys = new Set(winners.map((w) => canon(w)));
+    const applied: PendingResolution[] = [];
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const [marketIdHex, label] of Object.entries(ev.marketLabels)) {
+      const c = classifyMarketLabel(label);
+      if (!c || c.kind !== "hand-winner" || c.handIdx !== handIdx) continue;
+      // Use fuzzy matcher so OCR shortforms ("airball") collapse to
+      // the market's full name ("NIK AIRBALL") just like the
+      // session-level resolutions do.
+      const isWinner = winners.some((w) => nameMatch(c.player, w));
+      const outcome: Outcome = isWinner ? 1 : 2;
+      const outcomeStr: "YES" | "NO" = isWinner ? "YES" : "NO";
+      const reason = outcome === 1
+        ? `won hand #${handIdx} (winners: ${winners.join(", ")})`
+        : `lost hand #${handIdx} (winners: ${winners.join(", ")})`;
+      const p: PendingResolution = {
+        marketIdHex,
+        label,
+        classified: c,
+        outcome,
+        reason,
+      };
+      // Snapshot prior resolved-state before our own ledger write so
+      // we don't short-circuit on first ever resolve of this market.
+      const wasAlreadyResolved = this.isAlreadyResolved(handleHex, marketIdHex);
+      try {
+        this.ledger.setMarketResolution(handleHex, marketIdHex, outcomeStr);
+      } catch { /* unknown handle */ }
+      if (wasAlreadyResolved) continue;
+      try {
+        const marketIdBuf = Buffer.from(marketIdHex.replace(/^0x/, ""), "hex");
+        await this.client.resolveMarket(marketIdBuf, outcome);
+        console.log(
+          `[Settlement] hand resolved ${marketIdHex.slice(0, 8)}… (${c.player} hand #${handIdx}) → ${outcomeStr} — ${reason}`,
+        );
+        applied.push(p);
+      } catch (err: any) {
+        const msg = String(err?.message || "");
+        if (msg.includes("MarketAlreadyResolved") || msg.includes("already resolved")) {
+          continue;
+        }
+        console.warn(`[Settlement] hand-winner ${marketIdHex.slice(0, 8)}… resolve failed: ${msg.slice(0, 160)}`);
+      }
+      void now;
+    }
+    return applied;
   }
 
   /** Dry-run — compute resolutions without sending any txs. Useful

@@ -46,7 +46,8 @@ export interface SeededMarket {
     | "player-biggest-pot"
     | "player-most-hands"
     | "h2h-bluff"
-    | "h2h-pot";
+    | "h2h-pot"
+    | "hand-winner";
   /** Empty for generic markets. Set to player name(s) for player-aware. */
   players?: string[];
 }
@@ -221,6 +222,44 @@ function pickH2HPairs(players: Player[]): [Player, Player][] {
     pairs.push([a, b]);
   }
   return pairs;
+}
+
+/** Hand-level real-time markets — seeded the moment a new hand starts
+ *  (gameState OCR shows pre-flop → flop transition) for the top 2
+ *  in-hand players (the closest-to-the-action seats — typically the
+ *  players in a heads-up showdown post-flop). Settles the moment a
+ *  winner is declared on screen.
+ *
+ *  Cap of 2 markets/hand keeps the cost bounded: at ~50 hands/hr that's
+ *  ~100 markets/hr on devnet rent (~2 SOL/hr) — sustainable across a
+ *  multi-hour demo with the relayer's standard 5 SOL faucet drip. The
+ *  prior 5-player cap was 5 SOL/hr which burned through faucet drops
+ *  too quickly to leave room for the rest of the agent's writes.
+ *
+ *  Less coverage means heads-up showdowns get markets but multi-way
+ *  pots only seed for 2 of N players. The settlement engine still
+ *  marks the seeded markets as YES/NO based on canon-name match
+ *  against winnerPlayers — players who actually won but had no market
+ *  seeded simply don't pay out (same behavior as session-end leaders
+ *  who weren't in the lineup at start).
+ *
+ *  The slug bakes in handIdx so each hand creates fresh markets
+ *  rather than colliding with prior hands' settled markets. */
+export function handLevelMarketsFor(
+  sessionLabel: string,
+  handIdx: number,
+  inHandPlayers: Player[],
+): SeededMarket[] {
+  const players = inHandPlayers.slice(0, 2);
+  return players.map((p) =>
+    makeMarket({
+      sessionLabel,
+      slug: `hand_${handIdx}_${slugify(p.name)}`,
+      label: `Will ${p.name} win hand #${handIdx}?`,
+      kind: "hand-winner",
+      players: [p.name],
+    }),
+  );
 }
 
 /** Markets to add when a NEW player sits down mid-session (option A from

@@ -143,6 +143,25 @@ export class StreamMonitor {
    *  end. Errors here are caught at the call site so a failing
    *  settle never breaks the game-state loop. */
   private onSnapshot?: (handleIdHex: string) => Promise<void>;
+  /** Fired when sessionStats detects a new hand started (board went
+   *  pre-flop → flop). The handler should seed hand-winner markets
+   *  for each in-hand player. */
+  private onHandStart?: (
+    handleIdHex: string,
+    sessionLabel: string,
+    handIdx: number,
+    players: string[],
+  ) => Promise<void>;
+  /** Fired when sessionStats detects winners on a hand that has
+   *  open hand-winner markets. The handler should settle those markets
+   *  (winners → YES, others → NO). */
+  private onHandResolved?: (
+    handleIdHex: string,
+    sessionLabel: string,
+    handIdx: number,
+    winners: string[],
+    players: string[],
+  ) => Promise<void>;
 
   constructor(args: {
     apiKey: string;
@@ -155,6 +174,22 @@ export class StreamMonitor {
      *  SettlementEngine's live trigger. Optional — left undefined the
      *  monitor behaves as before. */
     onSnapshot?: (handleIdHex: string) => Promise<void>;
+    /** Called when a new hand starts (board went pre-flop → flop). */
+    onHandStart?: (
+      handleIdHex: string,
+      sessionLabel: string,
+      handIdx: number,
+      players: string[],
+    ) => Promise<void>;
+    /** Called when a hand resolves (winnerPlayers populated for an
+     *  open hand). */
+    onHandResolved?: (
+      handleIdHex: string,
+      sessionLabel: string,
+      handIdx: number,
+      winners: string[],
+      players: string[],
+    ) => Promise<void>;
     channels?: MonitoredChannel[];
     storePath?: string;
   }) {
@@ -166,6 +201,8 @@ export class StreamMonitor {
     this.createEvent = args.createEvent;
     this.seedMarket = args.seedMarket;
     this.onSnapshot = args.onSnapshot;
+    this.onHandStart = args.onHandStart;
+    this.onHandResolved = args.onHandResolved;
     this.channels = args.channels ?? DEFAULT_CHANNELS;
     this.storePath = args.storePath
       || process.env.AGENT_SESSION_STORE
@@ -260,7 +297,39 @@ export class StreamMonitor {
       try {
         const snap = await this.gameState.snapshot(sess.videoId);
         if (snap) {
-          this.stats.recordSnapshot(sess.sessionLabel, sess.handleIdHex, snap);
+          const delta = this.stats.recordSnapshot(sess.sessionLabel, sess.handleIdHex, snap);
+
+          // Hand-level real-time market lifecycle. The delta tells us
+          // whether THIS snapshot was the first flop frame of a new
+          // hand (handStart) or the winner-overlay frame of an open
+          // hand (handResolved). We act on each independently —
+          // handStart seeds new markets, handResolved settles them.
+          if (delta.handStart && this.onHandStart) {
+            try {
+              await this.onHandStart(
+                sess.handleIdHex,
+                sess.sessionLabel,
+                delta.handStart.handIdx,
+                delta.handStart.players,
+              );
+            } catch (e: any) {
+              console.warn(`[StreamMonitor] handStart seed failed for ${sess.sessionLabel}: ${e.message?.slice(0, 160)}`);
+            }
+          }
+          if (delta.handResolved && this.onHandResolved) {
+            try {
+              await this.onHandResolved(
+                sess.handleIdHex,
+                sess.sessionLabel,
+                delta.handResolved.handIdx,
+                delta.handResolved.winners,
+                delta.handResolved.players,
+              );
+            } catch (e: any) {
+              console.warn(`[StreamMonitor] handResolved settle failed for ${sess.sessionLabel}: ${e.message?.slice(0, 160)}`);
+            }
+          }
+
           // Fire the live settlement trigger after the stats record
           // updates so event-driven markets (quads, royal, first bust,
           // pot-threshold) resolve the moment their condition is met.
