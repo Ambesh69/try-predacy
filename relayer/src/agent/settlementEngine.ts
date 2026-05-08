@@ -31,6 +31,7 @@
 import type { SolanaClient } from "../solanaClient";
 import type { EventLedger, EventHandleEntry } from "../eventLedger";
 import type { SessionStats, SessionStatsRecord } from "./sessionStats";
+import { type SignalAggregator, SignalKeys } from "./signalAggregator";
 
 export type Outcome = 1 | 2; // 1 = YES, 2 = NO
 
@@ -163,6 +164,13 @@ export interface PendingResolution {
   classified: Classified;
   outcome: Outcome;
   reason: string;
+  /** Aggregator gate key. When set, the SettlementEngine only fires the
+   *  on-chain `resolve_market` tx if the SignalAggregator has cross-
+   *  confirmed this key (≥2 vision frames OR vision + audio/chat/manual
+   *  within ±10s). null = no gate (end-trigger leaderboard resolutions
+   *  + N/A markets fire unconditionally). Set by computeResolutions for
+   *  live-trigger event-driven kinds. */
+  gateKey?: string | null;
 }
 
 /** Pure function — given an EventHandle's markets and the current
@@ -204,6 +212,11 @@ export function computeResolutions(
     if (maxPot < 1) biggestPotWinner = null;
   }
 
+  // Use the entry's hex handleId as the namespace for aggregator keys.
+  // computeResolutions runs in the live + end paths; only live emits
+  // gateKeys (end-trigger never gates).
+  const handleHex = ev.handleId;
+
   for (const [marketIdHex, label] of Object.entries(ev.marketLabels)) {
     const c = classifyMarketLabel(label);
     if (!c) continue;
@@ -213,19 +226,25 @@ export function computeResolutions(
     // fine since the hand never actually resolved on-stream).
     if (c.kind === "hand-winner") continue;
 
-    const push = (outcome: Outcome, reason: string) => {
-      out.push({ marketIdHex, label, classified: c, outcome, reason });
+    const push = (outcome: Outcome, reason: string, gateKey?: string | null) => {
+      out.push({ marketIdHex, label, classified: c, outcome, reason, gateKey });
     };
 
     switch (c.kind) {
       case "quads": {
-        if (stats?.quadsHit) push(1, "QUADS overlay observed");
-        else if (trigger === "end") push(2, "session ended without quads");
+        if (stats?.quadsHit) {
+          push(1, "QUADS overlay observed", trigger === "live" ? SignalKeys.quads(handleHex) : null);
+        } else if (trigger === "end") {
+          push(2, "session ended without quads");
+        }
         break;
       }
       case "royal": {
-        if (stats?.royalFlushHit) push(1, "ROYAL FLUSH overlay observed");
-        else if (trigger === "end") push(2, "session ended without royal flush");
+        if (stats?.royalFlushHit) {
+          push(1, "ROYAL FLUSH overlay observed", trigger === "live" ? SignalKeys.royal(handleHex) : null);
+        } else if (trigger === "end") {
+          push(2, "session ended without royal flush");
+        }
         break;
       }
       case "whale-pot": {
@@ -267,10 +286,21 @@ export function computeResolutions(
         break;
       }
       case "bust-first": {
-        // Live trigger fires the moment the first bust is observed.
+        // Live trigger fires the moment the first bust is observed —
+        // gated by ≥2 cross-confirming frames of the BUSTED overlay
+        // for `bustFirstWinner`. The same gate applies whether this
+        // market resolves YES (player matches) or NO (different player
+        // busted first), since both decisions hinge on the same
+        // identification event.
         if (stats?.firstBustAt && bustFirstWinner) {
-          push(nameMatch(c.player, bustFirstWinner) ? 1 : 2,
-            `first bust: ${bustFirstWinner}`);
+          const gate = trigger === "live"
+            ? SignalKeys.firstBust(handleHex, bustFirstWinner)
+            : null;
+          push(
+            nameMatch(c.player, bustFirstWinner) ? 1 : 2,
+            `first bust: ${bustFirstWinner}`,
+            gate,
+          );
         } else if (trigger === "end") {
           push(2, "session ended without busts");
         }
@@ -319,11 +349,23 @@ export class SettlementEngine {
   private client: SolanaClient;
   private ledger: EventLedger;
   private stats: SessionStats;
+  /** Cross-confirmation gate. Live + hand-level resolutions only fire
+   *  on-chain when the underlying signal has been observed by ≥2
+   *  independent sources within ±10s. Null disables the gate (testing,
+   *  offline replays). */
+  private aggregator: SignalAggregator | null = null;
 
   constructor(client: SolanaClient, ledger: EventLedger, stats: SessionStats) {
     this.client = client;
     this.ledger = ledger;
     this.stats = stats;
+  }
+
+  /** Wire a SignalAggregator instance — usually the same one fed by
+   *  SessionStats.recordSnapshot. Called once from index.ts after both
+   *  modules are constructed. */
+  setAggregator(aggregator: SignalAggregator): void {
+    this.aggregator = aggregator;
   }
 
   /** True when the EventLedger already records a resolution for this
@@ -370,6 +412,40 @@ export class SettlementEngine {
     const winnerKeys = new Set(winners.map((w) => canon(w)));
     const applied: PendingResolution[] = [];
     const now = Math.floor(Date.now() / 1000);
+
+    // ─── Cross-signal gate (hand-level) ──────────────────────────────
+    //
+    // Hand-winner settlement is the most resolution-sensitive path —
+    // a single false OCR frame attributing a win to the wrong player
+    // would settle YES/NO across the whole hand's market batch. Require
+    // the winner-overlay to have been seen by ≥2 sources within ±10s
+    // before firing. If multiple winners are declared (chopped pot),
+    // ANY one of them being cross-confirmed clears the gate (the
+    // overlay typically lists all of them).
+    if (this.aggregator && winners.length > 0) {
+      const confirmedWinner = winners.find((w) =>
+        this.aggregator!.isConfirmed(SignalKeys.handWinner(handleHex, handIdx, w)),
+      );
+      if (!confirmedWinner) {
+        // Wait — next gameState frame will re-trigger this path via
+        // streamMonitor.onHandResolved, by which time the winner
+        // overlay has been observed in another frame and the gate
+        // opens. settlementEngine.settleHand is idempotent so re-entry
+        // is safe.
+        return [];
+      }
+      const conf = this.aggregator.confirmation(SignalKeys.handWinner(handleHex, handIdx, confirmedWinner));
+      if (conf) {
+        const visionCount = conf.observations.filter((o) => o.source === "vision").length;
+        const otherSrcs = [...new Set(conf.observations.filter((o) => o.source !== "vision").map((o) => o.source))];
+        const proof = otherSrcs.length > 0
+          ? `${visionCount}× vision + ${otherSrcs.join(",")}`
+          : `${visionCount}× vision`;
+        console.log(
+          `[Settlement] hand-winner gate cleared for hand #${handIdx} winner=${confirmedWinner} (${proof})`,
+        );
+      }
+    }
 
     for (const [marketIdHex, label] of Object.entries(ev.marketLabels)) {
       const c = classifyMarketLabel(label);
@@ -436,6 +512,36 @@ export class SettlementEngine {
 
     const applied: PendingResolution[] = [];
     for (const p of pending) {
+      // ─── Cross-signal gate ────────────────────────────────────────
+      //
+      // Live triggers must clear the SignalAggregator before firing
+      // on-chain. End triggers are not gated — the session is over,
+      // no more confirming frames are coming, and the leaderboard
+      // resolutions read from accumulated stats rather than a single-
+      // frame badge so the false-positive surface is much smaller.
+      if (trigger === "live" && p.gateKey && this.aggregator) {
+        const conf = this.aggregator.confirmation(p.gateKey);
+        if (!conf) {
+          // Not yet confirmed — skip this round, the next snapshot will
+          // try again. Once the underlying signal accumulates ≥2
+          // observations the gate opens and settlement fires.
+          continue;
+        }
+        // First time we're firing on this gate — log the cross-confirmation
+        // proof so the demo + audit trail show "we settled because vision
+        // saw it twice / vision + audio confirmed it".
+        if (!this.isAlreadyResolved(handleHex, p.marketIdHex)) {
+          const visionCount = conf.observations.filter((o) => o.source === "vision").length;
+          const otherSrcs = [...new Set(conf.observations.filter((o) => o.source !== "vision").map((o) => o.source))];
+          const proof = otherSrcs.length > 0
+            ? `${visionCount}× vision + ${otherSrcs.join(",")}`
+            : `${visionCount}× vision`;
+          console.log(
+            `[Settlement] gate cleared for ${p.gateKey} (${proof}) → settling ${p.marketIdHex.slice(0, 8)}…`,
+          );
+        }
+      }
+
       const outcomeStr: "YES" | "NO" = p.outcome === 1 ? "YES" : "NO";
       // Snapshot the prior resolved-state BEFORE writing the ledger;
       // otherwise our own setMarketResolution below makes

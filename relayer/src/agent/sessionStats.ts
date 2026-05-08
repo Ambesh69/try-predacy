@@ -26,6 +26,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { GameState } from "./gameStateExtractor";
+import { type SignalAggregator, SignalKeys } from "./signalAggregator";
 
 export interface PerPlayerStats {
   /** Confirmed bluffs (set by aggregator after multi-signal confirmation). */
@@ -132,12 +133,24 @@ export class SessionStats {
    *  the same callout staying on screen for several frames doesn't double-
    *  flag quadsHit / royalFlushHit. */
   private seenStrengths: Map<string, Set<string>> = new Map();
+  /** Optional cross-signal aggregator. When set, recordSnapshot emits
+   *  observations alongside its stat updates so the SettlementEngine can
+   *  gate on-chain resolutions on ≥2-source confirmation. Null disables
+   *  the gate (single-signal path — used by tests + offline replays). */
+  private aggregator: SignalAggregator | null = null;
 
   constructor(storePath?: string) {
     this.storePath = storePath
       || process.env.AGENT_STATS_PATH
       || (process.env.LEDGER_PATH ? DEFAULT_STATS_PATH : FALLBACK_STATS_PATH);
     this.state = this.load();
+  }
+
+  /** Wire a SignalAggregator instance. Called once from index.ts after
+   *  both modules are constructed. recordSnapshot emits observations to
+   *  this aggregator using the canonical SignalKeys. */
+  setAggregator(aggregator: SignalAggregator): void {
+    this.aggregator = aggregator;
   }
 
   ensureSession(sessionLabel: string, handleIdHex: string): SessionStatsRecord {
@@ -191,6 +204,11 @@ export class SessionStats {
     }
 
     // ─── Hand strength flags (any-hand session markets) ─────────────
+    //
+    // The flag flips here are informational (drives the live standings
+    // panel) — settlement gates on the SignalAggregator separately.
+    // Each frame that observes the badge counts as one vision signal;
+    // the SettlementEngine waits for ≥2 frames before firing on-chain.
     const strengthsForSession = this.seenStrengths.get(sessionLabel) ?? new Set<string>();
     for (const hs of snap.handStrengths) {
       if (strengthsForSession.has(hs)) continue;
@@ -199,6 +217,19 @@ export class SessionStats {
       if (hs === "ROYAL FLUSH") s.royalFlushHit = true;
     }
     this.seenStrengths.set(sessionLabel, strengthsForSession);
+    // Always observe (even on duplicate frames within seenStrengths) so
+    // a sustained on-screen badge accumulates the multi-frame
+    // confirmation the aggregator needs.
+    if (this.aggregator) {
+      const frameId = String(snap.capturedAt);
+      for (const hs of snap.handStrengths) {
+        if (hs === "QUADS") {
+          this.aggregator.observe(SignalKeys.quads(handleIdHex), "vision", snap.capturedAt, frameId);
+        } else if (hs === "ROYAL FLUSH") {
+          this.aggregator.observe(SignalKeys.royal(handleIdHex), "vision", snap.capturedAt, frameId);
+        }
+      }
+    }
 
     // ─── All-in counter ────────────────────────────────────────────
     // The all-in overlay typically stays up for 5-15s, so we'd double-
@@ -236,12 +267,34 @@ export class SessionStats {
     }
 
     // ─── Busts ─────────────────────────────────────────────────────
+    //
+    // Same informational/gating split as hand strengths: stats reflect
+    // the OCR's observation immediately, on-chain settlement waits on
+    // the aggregator.
     for (const name of snap.bustedPlayers) {
       const p = this.ensurePlayer(s, name);
-      if (p.bustedAt !== null) continue; // already counted
-      p.bustedAt = snap.capturedAt;
-      s.bustsCount += 1;
-      if (s.firstBustAt === null) s.firstBustAt = snap.capturedAt;
+      if (p.bustedAt === null) {
+        p.bustedAt = snap.capturedAt;
+        s.bustsCount += 1;
+        if (s.firstBustAt === null) s.firstBustAt = snap.capturedAt;
+      }
+    }
+    // Observe every frame the BUSTED overlay shows the first-busted
+    // player, so the cross-confirmation aggregator accumulates ≥2 vision
+    // frames before the SettlementEngine fires "first-bust:<player>".
+    if (this.aggregator) {
+      const frameId = String(snap.capturedAt);
+      for (const name of snap.bustedPlayers) {
+        const p = s.players[name.toLowerCase()];
+        if (p && p.bustedAt !== null && p.bustedAt === s.firstBustAt) {
+          this.aggregator.observe(
+            SignalKeys.firstBust(handleIdHex, name),
+            "vision",
+            snap.capturedAt,
+            frameId,
+          );
+        }
+      }
     }
 
     // ─── Hand-boundary detection (board count edge) ────────────────
@@ -283,6 +336,23 @@ export class SessionStats {
       };
       // Reset so the next flop transition picks up a fresh hand.
       s.currentHandPlayers = [];
+    }
+    // Observe each frame that shows winner overlay for the in-progress
+    // hand — gives SettlementEngine the ≥2-frame cross-confirmation it
+    // needs before firing hand-winner:<player> resolutions on-chain.
+    // Winner overlays typically stay up 8-15s, so a real winner clears
+    // ≥2 frames at the 5s OCR cadence; single-frame mis-reads don't.
+    if (this.aggregator && snap.winnerPlayers.length > 0) {
+      const frameId = String(snap.capturedAt);
+      const handIdx = s.currentHandIdx;
+      for (const name of snap.winnerPlayers) {
+        this.aggregator.observe(
+          SignalKeys.handWinner(handleIdHex, handIdx, name),
+          "vision",
+          snap.capturedAt,
+          frameId,
+        );
+      }
     }
 
     this.lastBoardByLabel.set(sessionLabel, snap.boardCardCount);

@@ -1234,9 +1234,29 @@ async function seedMarketUnderEvent(
 import { StreamMonitor } from "./agent/streamMonitor";
 import { getSessionStats } from "./agent/sessionStats";
 import { getSettlementEngine } from "./agent/settlementEngine";
+import { getSignalAggregator, SignalKeys, type SignalSource } from "./agent/signalAggregator";
 
 const sessionStats = getSessionStats();
 const settlementEngine = getSettlementEngine(client, eventLedger, sessionStats);
+// Cross-signal aggregator: gates live + hand-level settlement on
+// ≥2-source confirmation (≥2 vision frames, or vision + audio/chat/manual).
+// Both SessionStats (publishes observations during recordSnapshot) and
+// SettlementEngine (queries the gate before firing on-chain) share the
+// same singleton.
+const signalAggregator = getSignalAggregator();
+sessionStats.setAggregator(signalAggregator);
+settlementEngine.setAggregator(signalAggregator);
+// Sweep expired (single-source) entries every 30s. The aggregator's
+// expirySec is 60s — pruning at half that cadence keeps the in-memory
+// map bounded without affecting correctness (confirmed entries never
+// expire, single-signal pending entries that haven't been re-observed
+// in 60s drop out).
+setInterval(() => {
+  const dropped = signalAggregator.prune(Math.floor(Date.now() / 1000));
+  if (dropped.length > 0) {
+    console.log(`[Aggregator] pruned ${dropped.length} expired pending entr${dropped.length === 1 ? "y" : "ies"}: ${dropped.slice(0, 3).join(", ")}${dropped.length > 3 ? `, +${dropped.length - 3} more` : ""}`);
+  }
+}, 30_000);
 const streamMonitor = new StreamMonitor({
   apiKey: process.env.YOUTUBE_API_KEY ?? "",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
@@ -1295,6 +1315,88 @@ app.get("/agent/stats", (req, res) => {
     : all.find((s) => s.handleIdHex.toLowerCase() === handleId.toLowerCase());
   if (!hit) return res.status(404).json({ error: "no stats for that session" });
   res.json(hit);
+});
+
+/**
+ * GET /agent/aggregator
+ * Snapshot of the cross-signal aggregator. Returns the confirmed and
+ * pending event keys with their observation history. The window/expiry
+ * config is included so consumers can render "X observed, needs Y more"
+ * progress UI without hardcoding the thresholds.
+ *
+ * Public visibility: the gate decisions drive on-chain settlement, so
+ * surfacing the aggregator state is part of the demo's "the agent's
+ * resolution rationale is auditable" narrative.
+ */
+app.get("/agent/aggregator", (_req, res) => {
+  const snap = signalAggregator.snapshot();
+  res.json({
+    config: signalAggregator.config,
+    confirmed: snap.confirmed.map((s) => ({
+      key: s.key,
+      confirmedAt: s.confirmedAt,
+      firstSeenAt: s.firstSeenAt,
+      observations: s.observations.map((o) => ({ source: o.source, at: o.at })),
+    })),
+    pending: snap.pending.map((s) => ({
+      key: s.key,
+      firstSeenAt: s.firstSeenAt,
+      observations: s.observations.map((o) => ({ source: o.source, at: o.at })),
+    })),
+  });
+});
+
+/**
+ * POST /agent/aggregator/observe
+ *
+ * Operator-injected cross-confirmation hook. Useful when:
+ *   - audio/chat pipelines aren't running (pre-mainnet, no quota)
+ *     and an operator wants to manually confirm a deterministic signal
+ *     they observed in the broadcast (judges' demo path).
+ *   - resolving a stuck market where vision saw the event once but the
+ *     overlay flickered off before a 2nd frame.
+ *
+ * Body: { key: string, source?: SignalSource } — defaults source=manual.
+ * Returns { confirmed: boolean, ... } so the caller can verify the gate
+ * cleared.
+ */
+app.post("/agent/aggregator/observe", express.json(), (req, res) => {
+  const { key, source } = req.body ?? {};
+  if (typeof key !== "string" || !key) {
+    return res.status(400).json({ error: "key required" });
+  }
+  const allowed: SignalSource[] = ["vision", "audio", "chat", "manual"];
+  const src: SignalSource = allowed.includes(source) ? source : "manual";
+  const at = Math.floor(Date.now() / 1000);
+  const confirmed = signalAggregator.observe(key, src, at, `op-${at}`);
+  res.json({ confirmed, key, source: src, at });
+});
+
+/**
+ * Convenience: pre-built keys (so the operator UI / docs don't need to
+ * mirror the SignalKeys constructors). Returns the canonical key for
+ * common gate kinds; POST to /agent/aggregator/observe with the
+ * resulting key + source=manual to clear a gate.
+ */
+app.get("/agent/aggregator/keys", (req, res) => {
+  const handleId = (req.query.handleId as string) || "";
+  if (!handleId) {
+    return res.status(400).json({ error: "handleId required" });
+  }
+  // Dynamic templates are returned as canonical strings rather than
+  // closures so the response stays JSON-serialisable. Operator UIs +
+  // CLI scripts substitute the placeholders client-side.
+  res.json({
+    static: {
+      quads: SignalKeys.quads(handleId),
+      royal: SignalKeys.royal(handleId),
+    },
+    templates: {
+      firstBust: SignalKeys.firstBust(handleId, "<player>"),
+      handWinner: SignalKeys.handWinner(handleId, 42, "<player>")
+        .replace(":42:", ":<handIdx>:"),
+    },
+  });
 });
 
 /**
