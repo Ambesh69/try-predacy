@@ -181,22 +181,38 @@ async function main() {
   const batchId = orderResp.batchId;
   console.log(`   batch=${batchId}`);
 
-  // ── 8. Wait for batch settle ────────────────────────────────────
-  console.log("\n7. Waiting for batch to settle (≤2 min)…");
-  const deadline = Date.now() + 120_000;
+  // ── 8. Wait for batch to reach SETTLED on-chain ─────────────────
+  //
+  // /settlement-stats returns 200 once lock_funds lands (LOCKED), but
+  // claim_with_proof requires the batch to be SETTLED (settle_batch
+  // ran the Groth16 verifier). Polling on-chain `batch.status == 3`
+  // closes the race that otherwise causes InvalidBatchStatus errors
+  // when /claim-proof fires before the relayer's async settle_batch
+  // job confirms.
+  console.log("\n7. Waiting for batch to settle (≤3 min)…");
+  const [batchPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("batch"), marketIdBuf, Buffer.from(new anchor.BN(batchId).toArray("le", 8))],
+    programId,
+  );
+  const deadline = Date.now() + 180_000;
   let settled = false;
+  let lastStatus: number | null = null;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 5_000));
-    const stats = await fetch(`${RELAYER_URL}/settlement-stats?batchId=${batchId}`);
-    if (stats.ok) {
-      settled = true;
-      break;
-    }
-    process.stdout.write(".");
+    try {
+      const batch = await (program.account as any).batch.fetch(batchPda);
+      lastStatus = batch.status;
+      // 0=OPEN, 1=SETTLING, 2=LOCKED, 3=SETTLED
+      if (batch.status === 3) {
+        settled = true;
+        break;
+      }
+    } catch { /* batch PDA not created yet on first poll */ }
+    process.stdout.write(`.${lastStatus ?? "?"}`);
   }
   console.log("");
-  if (!settled) throw new Error("batch did not settle within 2 min");
-  console.log("   ✓ batch settled");
+  if (!settled) throw new Error(`batch did not reach SETTLED within 3 min (last status=${lastStatus})`);
+  console.log("   ✓ batch settled (status=3)");
 
   // ── 9. Claim YES tokens (this lands them in user's YES ATA) ─────
   console.log("\n8. POST /claim-proof → mint YES tokens to user");
@@ -222,7 +238,11 @@ async function main() {
   );
   const yesAta = getAssociatedTokenAddressSync(yesMint, userKp.publicKey, true);
   let yesBal = 0n;
-  const claimDeadline = Date.now() + 60_000;
+  // 3 min cap — claim-proof submits a Groth16 proof to settle_batch
+  // (async job-queue on the relayer), then mints YES into the ATA.
+  // Under Railway load the proof + mint can take 90-120s after the
+  // batch settles. Polling cadence stays at 3s.
+  const claimDeadline = Date.now() + 180_000;
   while (Date.now() < claimDeadline) {
     try {
       const acc = await getAccount(connection, yesAta);
@@ -231,7 +251,7 @@ async function main() {
     } catch { /* ATA not created yet */ }
     await new Promise((r) => setTimeout(r, 3_000));
   }
-  if (yesBal === 0n) throw new Error("YES tokens never landed in user ATA");
+  if (yesBal === 0n) throw new Error("YES tokens never landed in user ATA after 180s — claim-proof job may have failed");
   console.log(`   YES balance = ${yesBal} (raw)`);
 
   // ── 10. Resolve the market YES (admin endpoint) ─────────────────
@@ -275,17 +295,35 @@ async function main() {
   await connection.confirmTransaction(sig, "confirmed");
   console.log(`   sig=${sig}`);
 
-  // ── 13. Verify USDC arrived ────────────────────────────────────
+  // ── 13. Verify the redeem actually executed ────────────────────
+  //
+  // Pass condition: YES balance went to zero (tokens burned by redeem)
+  // + the redeem tx landed (no err). We deliberately don't check the
+  // user's USDC delta here because in this script the buyer keypair
+  // == relayer keypair, so the user's wallet is also paying the LMSR
+  // seed at init_bootstrap_pool time (per the funded-seed fix). In a
+  // real deployment the relayer treasury and buyer wallets are
+  // separate and the buyer would see +$10 net on a $10 winning bet.
+  const yesAfter = await getAccount(connection, yesAta).then((a) => BigInt(a.amount.toString())).catch(() => 0n);
   const usdcAfter = (await getAccount(connection, userUsdcAcct.address)).amount;
   const delta = BigInt(usdcAfter.toString()) - BigInt(usdcBefore.toString());
-  console.log(`\n12. USDC delta: ${fmtUsd(delta)} (raw=${delta})`);
-  // Buyer paid clearing_price × shares for the YES side, then redeemed
-  // the YES tokens 1:1 for $1 each at resolution. Net should be roughly
-  // shares_received × ($1.00 - clearing_price) ≥ 0. Conservative check:
-  // any positive delta proves /claims handed back a working tx.
-  if (delta <= 0n) throw new Error(`expected positive USDC delta, got ${delta}`);
+  console.log(`\n12. Verify redeem executed`);
+  console.log(`    YES balance: ${yesBal} → ${yesAfter}  (expect → 0 — tokens burned)`);
+  console.log(`    USDC delta: ${fmtUsd(delta)} (note: same wallet funded LMSR seed in this test)`);
+  if (yesAfter !== 0n) throw new Error(`YES tokens not burned: balance still ${yesAfter}`);
 
-  console.log("\n✅ /claims happy path verified — non-zero claim returned, redeem tx executed, USDC arrived.\n");
+  // Confirm the redeem tx truly succeeded on-chain (no silent simulation
+  // skip). meta.err === null when both CPIs (YES burn + USDC transfer)
+  // landed; this is the assertion that proves the LMSR-seed-funded vault
+  // bug is fixed.
+  const txInfo = await connection.getTransaction(sig, {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0,
+  });
+  if (!txInfo) throw new Error("redeem tx not found on-chain");
+  if (txInfo.meta?.err) throw new Error(`redeem tx errored: ${JSON.stringify(txInfo.meta.err)}`);
+
+  console.log("\n✅ /claims happy path verified — non-zero claim returned, redeem tx executed on-chain (YES burned, USDC paid out from collateralized vault).\n");
 }
 
 main().catch((err) => {
