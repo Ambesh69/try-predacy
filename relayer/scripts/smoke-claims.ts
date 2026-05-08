@@ -149,7 +149,7 @@ async function main() {
       body: JSON.stringify({ marketId: marketIdHex, label: "smoke claims happy path" }),
     },
   );
-  const bound = await bindRes.json();
+  const bound: any = await bindRes.json();
   if (!bound.ok) throw new Error(`bind failed: ${JSON.stringify(bound)}`);
 
   // ── 6. Activate batch processing for the market ─────────────────

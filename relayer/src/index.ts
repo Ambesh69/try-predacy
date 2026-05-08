@@ -1200,6 +1200,45 @@ async function createEventOnChain(input: CreateEventInput): Promise<CreateEventO
  *  pool, attach to the event in the ledger with a label. Used by the
  *  agent to seed prop markets and by POST /events/:id/markets for
  *  operator-driven attaches. */
+/** Ensure the relayer's USDC ATA holds at least `needed` micro-USDC.
+ *  Devnet-only — the relayer is the USDC mint authority so it can self-
+ *  mint up to a target buffer. Mints `needed × 10` so we don't
+ *  re-trigger on every market seed (50 markets/hour at $100 each =
+ *  $5K/hour, batched mint of $1K covers ~10 seeds). On mainnet this
+ *  helper would be a no-op since the relayer can't mint real USDC —
+ *  the operator would need to fund the ATA out-of-band. */
+async function ensureRelayerUsdcForSeed(needed: bigint): Promise<void> {
+  if (needed === 0n) return;
+  try {
+    const { getAssociatedTokenAddressSync, getAccount, getOrCreateAssociatedTokenAccount, mintTo } =
+      await import("@solana/spl-token");
+    const protocolConfig = await client.fetchProtocolConfig();
+    const usdcMint = (protocolConfig as any).usdcMint as PublicKey;
+    const connection = client.getConnection();
+    const relayerKeypair = config.relayerKeypair;
+    const ata = getAssociatedTokenAddressSync(usdcMint, relayerKeypair.publicKey, true);
+    let bal = 0n;
+    try {
+      const acc = await getAccount(connection, ata);
+      bal = BigInt(acc.amount.toString());
+    } catch {
+      // ATA doesn't exist yet — create it.
+      await getOrCreateAssociatedTokenAccount(
+        connection, relayerKeypair, usdcMint, relayerKeypair.publicKey,
+      );
+    }
+    if (bal >= needed) return;
+    // Top up to a multiple of `needed` to amortise mint calls.
+    const topUp = needed * 10n;
+    await mintTo(connection, relayerKeypair, usdcMint, ata, relayerKeypair, Number(topUp));
+    console.log(`[ensureRelayerUsdcForSeed] minted ${topUp} micro-USDC to relayer ATA (had ${bal}, needed ≥ ${needed})`);
+  } catch (err: any) {
+    console.warn(`[ensureRelayerUsdcForSeed] top-up failed: ${oneLineErr(err)}`);
+    // Don't throw — let initBootstrapPool surface the real error if the
+    // ATA is genuinely under-funded after this.
+  }
+}
+
 async function seedMarketUnderEvent(
   eventHandleHex: string,
   marketIdHex: string,
@@ -1229,11 +1268,17 @@ async function seedMarketUnderEvent(
     console.warn(`[seedMarketUnderEvent] startMarket ${marketIdHex.slice(0, 8)}… tolerated: ${msg.slice(0, 120)}`);
   }
 
-  // 2. Init Tier 0 bootstrap pool. Idempotent — already-exists is caught.
+  // 2. Init Tier 0 bootstrap pool. The on-chain ix transfers
+  //    `bootstrap_seed_usdc` from the relayer's USDC ATA into the
+  //    market's PDA-owned vault — so the LMSR's worst-case payout is
+  //    actually collateralized. Top up the relayer's USDC ATA first if
+  //    it would dip below the seed (devnet only — relayer is the mint
+  //    authority). Idempotent — already-exists is caught.
   try {
+    await ensureRelayerUsdcForSeed(BigInt(ev.bootstrapSeedUsdc.toString()));
     await client.initBootstrapPool(marketIdBuf, eventHandleKey);
   } catch (err: any) {
-    console.warn(`[seedMarketUnderEvent] initBootstrapPool warning for ${marketIdHex.slice(0, 8)}…: ${err.message}`);
+    console.warn(`[seedMarketUnderEvent] initBootstrapPool warning for ${marketIdHex.slice(0, 8)}…: ${oneLineErr(err)}`);
   }
 
   // 3. Bind in the ledger with the human-readable label.

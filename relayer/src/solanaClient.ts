@@ -637,18 +637,36 @@ export class SolanaClient {
 
   /**
    * Initialise a Tier 0 LMSR Bootstrap Pool for a market under an event.
-   * Operator-only. Reads `bootstrap_seed_usdc` from the EventHandle.
+   * Operator-only. Reads `bootstrap_seed_usdc` from the EventHandle and
+   * transfers that seed amount from the relayer's USDC ATA into the
+   * market's PDA-owned `usdc_vault`. The transfer happens *inside* the
+   * on-chain ix so the LMSR's worst-case payout (b · ln 2 ≈ seed) is
+   * actually collateralized when the first batch settles — fixes the
+   * undercollateralized-vault bug surfaced by the /claims smoke test.
+   *
+   * Pre-condition: the relayer's USDC ATA must hold ≥ seed_usdc. The
+   * caller is responsible for minting / topping it up first (we already
+   * mint mock USDC to the relayer at boot for devnet).
    */
   async initBootstrapPool(marketId: Buffer, eventHandleKey: PublicKey): Promise<string> {
+    const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
     const [market] = this.marketPda(marketId);
     const [bootstrapPool] = this.bootstrapPoolPda(marketId);
+    const [usdcVault] = this.usdcVaultPda(marketId);
+    const config = await this.fetchProtocolConfig();
+    const usdcMint = (config as any).usdcMint as PublicKey;
+    const funderUsdc = getAssociatedTokenAddressSync(usdcMint, this.relayer.publicKey, true);
     const tx = await this.program.methods
       .initBootstrapPool()
       .accounts({
         market,
         eventHandle: eventHandleKey,
         bootstrapPool,
+        usdcVault,
+        usdcMint,
+        funderUsdc,
         authority: this.relayer.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
