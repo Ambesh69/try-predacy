@@ -1616,6 +1616,53 @@ app.post("/agent/events/:handle/settlement/end", async (req, res) => {
 });
 
 /**
+ * POST /admin/events/:handle/markets/:marketId/resolve
+ *
+ * Operator-only. Force a deterministic on-chain resolution + ledger
+ * write for a single market under a known event. Bypasses the
+ * SettlementEngine's signal pipeline (no SessionStats, no aggregator
+ * gate) — used by the /claims happy-path smoke test to set up a
+ * resolved state without standing up a live session.
+ *
+ * body: { outcome: "YES" | "NO" }
+ *
+ * Idempotent: if the market is already resolved on-chain, the on-chain
+ * call gracefully short-circuits (MarketAlreadyResolved); the ledger
+ * write below is also idempotent.
+ */
+app.post("/admin/events/:handle/markets/:marketId/resolve", express.json(), async (req, res) => {
+  try {
+    const handle = req.params.handle;
+    const marketIdHex = req.params.marketId.replace(/^0x/, "");
+    const outcomeStr = String(req.body?.outcome ?? "").toUpperCase();
+    if (outcomeStr !== "YES" && outcomeStr !== "NO") {
+      return res.status(400).json({ error: 'outcome must be "YES" or "NO"' });
+    }
+    if (!eventLedger.get(handle)) {
+      return res.status(404).json({ error: "EventHandle not found in ledger" });
+    }
+    const outcome = outcomeStr === "YES" ? 1 : 2;
+    const marketIdBuf = Buffer.from(marketIdHex, "hex");
+    let onchainResult: "resolved" | "already-resolved" = "resolved";
+    try {
+      await client.resolveMarket(marketIdBuf, outcome);
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      if (msg.includes("MarketAlreadyResolved") || msg.includes("already resolved")) {
+        onchainResult = "already-resolved";
+      } else {
+        throw err;
+      }
+    }
+    eventLedger.setMarketResolution(handle, marketIdHex, outcomeStr as "YES" | "NO");
+    res.json({ ok: true, onchain: onchainResult, outcome: outcomeStr });
+  } catch (err: any) {
+    console.error(`[POST /admin/.../resolve] Error: ${oneLineErr(err)}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /agent/sessions
  * Lists every session the StreamMonitor has in its in-memory active map.
  * Useful for debugging when the EventLedger shows an event but the
