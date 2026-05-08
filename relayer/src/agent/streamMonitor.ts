@@ -242,7 +242,7 @@ export class StreamMonitor {
       try {
         await this.poll();
       } catch (err: any) {
-        console.error("[StreamMonitor] Poll failed:", err.message);
+        console.error(`[StreamMonitor] Poll failed: ${oneLineErr(err)}`);
       } finally {
         this.scheduleNext(POLL_INTERVAL_MS);
       }
@@ -923,7 +923,7 @@ export class StreamMonitor {
     try {
       await this.seedMarket(handleHex, m.marketIdHex, m.label);
     } catch (err: any) {
-      console.warn(`[StreamMonitor] seed ${m.slug} failed: ${err.message}`);
+      console.warn(`[StreamMonitor] seed ${m.slug} failed: ${oneLineErr(err)}`);
     }
   }
 
@@ -975,7 +975,7 @@ export class StreamMonitor {
         console.log("[StreamMonitor] Ignoring v1 session store (lineup-keyed schema is incompatible)");
       }
     } catch (err) {
-      console.warn("[StreamMonitor] State load failed:", err);
+      console.warn(`[StreamMonitor] State load failed: ${oneLineErr(err)}`);
     }
     return { schemaVersion: 2, active: {}, lastPollAt: 0 };
   }
@@ -986,9 +986,24 @@ export class StreamMonitor {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this.storePath, JSON.stringify(this.state, null, 2));
     } catch (err) {
-      console.error("[StreamMonitor] State persist failed:", err);
+      console.error(`[StreamMonitor] State persist failed: ${oneLineErr(err)}`);
     }
   }
+}
+
+/** Collapse any thrown value into a single-line, length-bounded string
+ *  for log hygiene. Stops Node's default Error stringification (which
+ *  includes a multi-line stack trace) from spilling across multiple
+ *  Railway log lines on every transient failure / OpenAI 429 / etc. */
+function oneLineErr(err: unknown, max = 200): string {
+  const raw = err instanceof Error
+    ? err.message
+    : typeof err === "string"
+      ? err
+      : err == null
+        ? "(unknown error)"
+        : (() => { try { return JSON.stringify(err); } catch { return String(err); } })();
+  return raw.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 /** Error subclass that carries the YouTube HTTP status + reason code.

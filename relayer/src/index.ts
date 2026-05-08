@@ -27,17 +27,31 @@ const processor = new BatchProcessor(
   },
 );
 
+// Single-line error formatter — stops Node's default Error stringification
+// (which spills the stack across multiple Railway log lines on every
+// transient OpenAI 429 / network blip) from blowing up log volume.
+const oneLineErr = (err: unknown, max = 200): string => {
+  const raw = err instanceof Error
+    ? err.message
+    : typeof err === "string"
+      ? err
+      : err == null
+        ? "(unknown error)"
+        : (() => { try { return JSON.stringify(err); } catch { return String(err); } })();
+  return raw.replace(/\s+/g, " ").trim().slice(0, max);
+};
+
 // WebSocket-based log streamer — works on any RPC with WSS (RPC Fast Hackathon
 // plan, public RPC, etc.). Primary path for Predacy program event streaming.
 const logStreamer = getLogStreamer(client.getConnection(), config);
-logStreamer.start().catch((err) => console.error("[logStreamer] Start failed:", err));
+logStreamer.start().catch((err) => console.error(`[logStreamer] Start failed: ${oneLineErr(err)}`));
 
 // Yellowstone gRPC streamer — optional upgrade path for RPC Fast Stream/Aperture
 // plans (sub-ms latency, richer filters). Only starts when RPC_FAST_GRPC_ENABLED=true.
 // When disabled (default), logStreamer handles everything.
 const grpcStreamer = getStreamer(config);
 if (config.rpcFastGrpcEnabled) {
-  grpcStreamer.start().catch((err) => console.error("[grpcStreamer] Start failed:", err));
+  grpcStreamer.start().catch((err) => console.error(`[grpcStreamer] Start failed: ${oneLineErr(err)}`));
 }
 
 // Ika Pre-Alpha dWallet manager. Lazy-initialized on first request; noop
@@ -756,7 +770,7 @@ app.post("/batch/:id/cross-chain/execute", async (req, res) => {
     store.save(executed);
     res.json({ ok: true, bundle: serializeBundle(executed) });
   } catch (err: any) {
-    console.error("[POST /batch/:id/cross-chain/execute] error:", err);
+    console.error(`[POST /batch/:id/cross-chain/execute] error: ${oneLineErr(err)}`);
     res.status(500).json({ error: err?.message ?? String(err) });
   }
 });
