@@ -1358,6 +1358,34 @@ const streamMonitor = new StreamMonitor({
 streamMonitor.start();
 
 /**
+ * POST /agent/pause
+ * Stops the streamMonitor's YouTube polling loop AND every active
+ * session's 5s game-state OCR ticker. No new OpenAI / YouTube quota
+ * burn until /agent/resume. Active session state stays in memory so a
+ * resume picks up exactly where pause left off.
+ */
+app.post("/agent/pause", (_req, res) => {
+  streamMonitor.stop();
+  console.log("[StreamMonitor] paused via /agent/pause");
+  res.json({ ok: true, paused: true });
+});
+
+/**
+ * POST /agent/resume
+ * Restarts the streamMonitor (idempotent — no-op if already running).
+ * Re-detects live streams + restarts game-state loops for any active
+ * session that's still in memory.
+ */
+app.post("/agent/resume", (_req, res) => {
+  streamMonitor.start();
+  // Restart per-session OCR loops immediately rather than waiting for
+  // the next YouTube poll cycle (which is minutes away).
+  streamMonitor.resumeActiveSessions();
+  console.log("[StreamMonitor] resumed via /agent/resume");
+  res.json({ ok: true, paused: false });
+});
+
+/**
  * GET /agent/stats?handleId=…  or  ?session=…
  * Returns the SessionStats record for a given session or EventHandle.
  * Used by the live-standings panel on the event detail page.

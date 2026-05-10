@@ -259,6 +259,17 @@ export class StreamMonitor {
     this.gameStateTimers.clear();
   }
 
+  /** Restart per-session game-state loops for every session still in
+   *  memory. Used after stop()+start() (pause/resume) so the OCR
+   *  tickers come back up immediately rather than waiting for the
+   *  next YouTube poll cycle (which can be 5+ minutes away). Safe to
+   *  call repeatedly — startGameStateLoop is idempotent. */
+  resumeActiveSessions(): void {
+    for (const sess of Object.values(this.state.active)) {
+      this.startGameStateLoop(sess);
+    }
+  }
+
   // ─── Per-session game-state loop ───────────────────────────────────
   // Each active session runs its own 5s ticker that pulls a frame, OCRs
   // the game-state regions, and feeds the result into SessionStats.
