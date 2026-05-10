@@ -1768,8 +1768,22 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
     const modeRaw = ((req.query.mode as string) || (req.body?.mode as string) || "additive").toLowerCase();
     const mode = (["additive", "reseed", "replace"].includes(modeRaw) ? modeRaw : "additive") as
       | "additive" | "reseed" | "replace";
+    // Manual lineup override — bypasses the OpenAI extractor when the
+    // broadcast cuts between multiple tables (HCL streams 3+ live tables
+    // + recap reels on a single videoId; extractor can't pin the
+    // current one). Accepts either ?players=NAME1,NAME2 query string or
+    // body.players[]. Each name becomes a Player at sequential seat
+    // index. Downstream prune / reseed / replace logic is unchanged.
+    let overrideLineup: string[] | undefined;
+    const playersBody = req.body?.players;
+    const playersQuery = req.query.players as string | undefined;
+    if (Array.isArray(playersBody)) {
+      overrideLineup = playersBody.map((n) => String(n).trim()).filter(Boolean);
+    } else if (typeof playersQuery === "string" && playersQuery.length > 0) {
+      overrideLineup = playersQuery.split(",").map((n) => n.trim()).filter(Boolean);
+    }
     const t0 = Date.now();
-    const result = await streamMonitor.forceRefresh(identifier, videoId, mode);
+    const result = await streamMonitor.forceRefresh(identifier, videoId, mode, overrideLineup);
     res.json({
       ok: true,
       elapsedMs: Date.now() - t0,

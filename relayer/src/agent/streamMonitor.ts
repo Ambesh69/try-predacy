@@ -394,6 +394,14 @@ export class StreamMonitor {
     identifier: string,
     overrideVideoId?: string,
     mode: "additive" | "reseed" | "replace" = "additive",
+    /** Manual lineup override — bypasses the OpenAI extractor entirely.
+     *  Used when the broadcast is cycling between multiple sessions /
+     *  replays and the extractor can't reliably identify the *current*
+     *  table (e.g. HCL streams cut between three different live tables
+     *  + a recap reel). When provided, the named players are treated as
+     *  if a single confident frame had returned them; downstream prune
+     *  / reseed / replace logic runs identically to the extractor path. */
+    overrideLineup?: string[],
   ): Promise<{
     sessionLabel: string;
     handleIdHex: string;
@@ -468,9 +476,30 @@ export class StreamMonitor {
     // backoff doesn't silently make extract() return null.
     this.extractor.clearFailures(session.videoId);
 
-    const lineup = await this.extractor.extract(session.videoId);
-    if (!lineup) {
-      throw new Error(`forceRefresh: extractor returned null for ${session.videoId}`);
+    // Manual override path: synthesize a confident lineup from the
+    // caller-provided names. Skips OpenAI entirely — used when the
+    // broadcast cuts between multiple tables and the extractor can't
+    // pin down the current one. Downstream logic (prune / reseed /
+    // replace) runs identically.
+    let lineup: Lineup | null;
+    if (overrideLineup && overrideLineup.length > 0) {
+      const cleaned = overrideLineup
+        .map((n) => n.trim())
+        .filter((n) => n.length > 0);
+      lineup = {
+        players: cleaned.map((name, i) => ({ seat: i + 1, name })),
+        capturedAt: Math.floor(Date.now() / 1000),
+        confident: true,
+        hash: "manual:" + cleaned.map((n) => n.toLowerCase()).sort().join(","),
+      };
+      console.log(
+        `[StreamMonitor] forceRefresh: manual lineup override (${cleaned.length} players: ${cleaned.join(", ")})`,
+      );
+    } else {
+      lineup = await this.extractor.extract(session.videoId);
+      if (!lineup) {
+        throw new Error(`forceRefresh: extractor returned null for ${session.videoId}`);
+      }
     }
 
     // Punctuation-insensitive dedup so "ST WANG" and "ST. WANG" don't
