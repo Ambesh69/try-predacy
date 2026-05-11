@@ -985,14 +985,28 @@ export class SolanaClient {
     return (this.program.account as any).bootstrapPool.fetch(pda);
   }
 
+  // Anchor 0.30 camelCases IDL account names — for "LPVault" / "LPPosition"
+  // the converter has shipped under different conventions across patch
+  // versions (lPVault, lpVault, LPVault). Resolve via fallback so we
+  // don't silently break on minor bumps.
+  private accountNamespace(...candidates: string[]): any {
+    const ns = (this.program.account as any);
+    for (const k of candidates) {
+      if (ns[k]) return ns[k];
+    }
+    throw new Error(
+      `No account namespace found for any of [${candidates.join(", ")}]. Available: ${Object.keys(ns).join(", ")}`,
+    );
+  }
+
   async fetchLpVault(eventHandleKey: PublicKey) {
     const [pda] = this.lpVaultPda(eventHandleKey);
-    return (this.program.account as any).lPVault.fetch(pda);
+    return this.accountNamespace("lpVault", "lPVault", "LPVault").fetch(pda);
   }
 
   async fetchLpPosition(vault: PublicKey, depositor: PublicKey) {
     const [pda] = this.lpPositionPda(vault, depositor);
-    return (this.program.account as any).lPPosition.fetch(pda);
+    return this.accountNamespace("lpPosition", "lPPosition", "LPPosition").fetch(pda);
   }
 
   async fetchMakerRebatePool(eventHandleKey: PublicKey) {
