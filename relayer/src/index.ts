@@ -1827,6 +1827,87 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
 });
 
 /**
+ * POST /agent/sessions/:identifier/prune-stale-markets
+ *
+ * Resolves every unresolved market attached to the session's EventHandle
+ * whose embedded player name doesn't match the current session.lineup.
+ * Stale markets surface when a session's lineup has been pruned (via
+ * mode=replace or a manual override) AFTER the agent already seeded
+ * per-player markets for the old roster — the lineup is clean but the
+ * EventLedger still carries the historical market labels.
+ *
+ * Resolution outcome: NO (2). A player who has left the table can no
+ * longer bluff, bust first, or win biggest pot in *this* session, so NO
+ * is the correct (and only) closeout.
+ *
+ * Returns { resolved: [marketIds], skipped: [{marketId, reason}] }.
+ * Idempotent — already-resolved markets are silently skipped via
+ * `MarketAlreadyResolved` from the on-chain program.
+ */
+app.post("/agent/sessions/:identifier/prune-stale-markets", async (req, res) => {
+  try {
+    const identifier = req.params.identifier.toLowerCase();
+    const active = streamMonitor.listActive();
+    const session = active.find(
+      (s) => s.handleIdHex.toLowerCase() === identifier || s.lineupHash === identifier,
+    );
+    if (!session) return res.status(404).json({ error: `no active session for ${identifier}` });
+
+    const ev = eventLedger.get(session.handleIdHex);
+    if (!ev?.marketLabels) return res.json({ resolved: [], skipped: [] });
+
+    // Build a fuzzy-match set of currently-active player names.
+    const canon = (s: string): string =>
+      s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
+    const activeCanon = new Set(session.lineup.map((p) => canon(p.name)));
+    const isActivePlayer = (label: string): boolean => {
+      // Markets without a player name (e.g. "Anyone hits quads tonight?")
+      // are always considered active.
+      const m = label.match(/^Will (.+?) (bluff|bust|win|hit)/i);
+      if (!m) return true;
+      const player = m[1].trim();
+      if (activeCanon.has(canon(player))) return true;
+      // Substring fallback handles OCR-shortened nameplate forms like
+      // "phil" vs "PHIL IVEY" that the strict canon misses.
+      const pCanon = canon(player);
+      for (const a of activeCanon) {
+        if (a.includes(pCanon) || pCanon.includes(a)) {
+          if (Math.min(a.length, pCanon.length) >= 3) return true;
+        }
+      }
+      return false;
+    };
+
+    const alreadyResolved = ev.resolutions ?? {};
+    const resolved: string[] = [];
+    const skipped: Array<{ marketId: string; reason: string }> = [];
+
+    for (const [marketIdHex, label] of Object.entries(ev.marketLabels)) {
+      if (alreadyResolved[marketIdHex]) continue;
+      if (isActivePlayer(label)) continue;
+      try {
+        const marketIdBuf = Buffer.from(marketIdHex.replace(/^0x/, ""), "hex");
+        await client.resolveMarket(marketIdBuf, 2 /* NO */);
+        eventLedger.setMarketResolution(session.handleIdHex, marketIdHex, "NO");
+        resolved.push(marketIdHex);
+        console.log(`[prune-stale] resolved ${marketIdHex.slice(0, 8)}… → NO  (label: ${label})`);
+      } catch (err: any) {
+        const msg = String(err?.message || "");
+        if (msg.includes("MarketAlreadyResolved") || msg.includes("already resolved")) {
+          eventLedger.setMarketResolution(session.handleIdHex, marketIdHex, "NO");
+          continue;
+        }
+        skipped.push({ marketId: marketIdHex, reason: msg.slice(0, 160) });
+      }
+    }
+    res.json({ ok: true, resolved, skipped, lineupSize: session.lineup.length });
+  } catch (err: any) {
+    console.error("[POST /agent/sessions/:identifier/prune-stale-markets] Error:", oneLineErr(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /agent/manual-tick?handleId=…&videoId=…
  * Debug endpoint — captures one game-state snapshot AND records it
  * into SessionStats under the given EventHandle. Lets us populate
