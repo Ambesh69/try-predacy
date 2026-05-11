@@ -2625,6 +2625,9 @@ app.post("/lp/commit-blind", async (req, res) => {
     const MIN_SOL_LAMPORTS = 2_000_000; // 0.002 SOL — ~400 tx worth of fees
     const TOPUP_LAMPORTS = 5_000_000;   // 0.005 SOL
     const currentSol = await client.getConnection().getBalance(depositorKey, "confirmed");
+    console.log(
+      `[POST /lp/commit-blind] depositor=${depositorKey.toBase58()} currentSol=${currentSol} (need >=${MIN_SOL_LAMPORTS})`,
+    );
     if (currentSol < MIN_SOL_LAMPORTS) {
       const { SystemProgram, Transaction: SolanaTx } = await import("@solana/web3.js");
       const topup = new SolanaTx().add(
@@ -2638,11 +2641,19 @@ app.post("/lp/commit-blind", async (req, res) => {
       topup.recentBlockhash = tbh;
       topup.feePayer = client.relayer.publicKey;
       topup.sign(client.relayer);
-      const topupSig = await client.getConnection().sendRawTransaction(topup.serialize());
-      await client.getConnection().confirmTransaction(topupSig, "confirmed");
-      console.log(
-        `[POST /lp/commit-blind] topped up ${depositorKey.toBase58().slice(0, 8)}… with ${TOPUP_LAMPORTS / 1e9} SOL (had ${currentSol / 1e9}), sig=${topupSig.slice(0, 16)}…`,
-      );
+      try {
+        const topupSig = await client.getConnection().sendRawTransaction(topup.serialize());
+        await client.getConnection().confirmTransaction(topupSig, "confirmed");
+        const newSol = await client.getConnection().getBalance(depositorKey, "confirmed");
+        console.log(
+          `[POST /lp/commit-blind] topup OK: ${depositorKey.toBase58().slice(0, 8)}… now has ${newSol / 1e9} SOL (sig=${topupSig.slice(0, 16)}…)`,
+        );
+      } catch (topupErr: any) {
+        console.error(`[POST /lp/commit-blind] topup FAILED:`, topupErr?.message, topupErr?.logs);
+        return res.status(500).json({
+          error: `Failed to fund depositor's SOL for tx fees: ${topupErr?.message}. Relayer keypair may be out of devnet SOL.`,
+        });
+      }
     }
 
     // Step 3b: build the on-chain tx. In blind mode we use the new

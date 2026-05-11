@@ -177,6 +177,20 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
       setPhase("signing");
       setPhaseDetail("Approve in your wallet…");
       const txBytes = decodeTxBase64(built.txBase64);
+      // Diagnostic: surface the addresses involved so the user can
+      // verify Privy is signing with the expected wallet. Mismatch
+      // here = invalid signature = tx silently dropped at preflight.
+      // eslint-disable-next-line no-console
+      console.log("[LPDeposit] signer/depositor", {
+        signerAddress: (wallet as any)?.address,
+        walletType: (wallet as any)?.walletClientType,
+        depositorInTx: walletAddress,
+        linkedAddress,
+        allWallets: solanaWallets.map((w: any) => ({
+          address: w.address,
+          type: w.walletClientType,
+        })),
+      });
       const result = await signAndSendTransaction({
         transaction: txBytes,
         wallet: wallet as any,
