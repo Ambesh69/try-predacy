@@ -161,7 +161,7 @@ export default function LPPositionsList({ refreshKey = 0 }: LPPositionsListProps
           My LP Positions
         </p>
         <p className="text-[10px] text-muted">
-          ${formatUsdc6(totalDeposited)} deposited · {String(totalShares)} shares
+          ${formatUsdc6(totalDeposited)} deposited · {formatUsdc6(totalShares)} shares
         </p>
       </div>
       <div className="divide-y divide-card-border/40 border border-card-border bg-card">
@@ -212,7 +212,11 @@ function PositionRow({
       </div>
       <div className="grid grid-cols-3 gap-2 text-[10px]">
         <Stat label="Deposit" value={`$${formatUsdc6(pos.depositedUsdc)}`} />
-        <Stat label="Shares"  value={String(BigInt(pos.shares))} />
+        {/* Shares are u64 in micro-USDC equivalents at initial deposit
+            (1 share = 1 micro-USDC of vault assets). Format like USDC so
+            "1,000,000,000 shares" doesn't look like a million-times
+            return; the on-chain math hasn't changed, just the display. */}
+        <Stat label="Shares" value={formatUsdc6(pos.shares)} />
         <Stat
           label={expired ? "Expired" : "Locked until"}
           value={relativeTime(pos.commitmentExpiresAt)}
