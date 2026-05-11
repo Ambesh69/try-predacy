@@ -2508,6 +2508,28 @@ app.post("/lp/commit", async (req, res) => {
       true,
     );
 
+    // Top up depositor's SOL if low — see /lp/commit-blind for rationale.
+    const MIN_SOL_LAMPORTS = 2_000_000;
+    const TOPUP_LAMPORTS = 5_000_000;
+    const currentSol = await client.getConnection().getBalance(depositorKey, "confirmed");
+    if (currentSol < MIN_SOL_LAMPORTS) {
+      const { SystemProgram, Transaction: SolanaTx } = await import("@solana/web3.js");
+      const topup = new SolanaTx().add(
+        SystemProgram.transfer({
+          fromPubkey: client.relayer.publicKey,
+          toPubkey: depositorKey,
+          lamports: TOPUP_LAMPORTS,
+        }),
+      );
+      const { blockhash: tbh } = await client.getConnection().getLatestBlockhash();
+      topup.recentBlockhash = tbh;
+      topup.feePayer = client.relayer.publicKey;
+      topup.sign(client.relayer);
+      const topupSig = await client.getConnection().sendRawTransaction(topup.serialize());
+      await client.getConnection().confirmTransaction(topupSig, "confirmed");
+      console.log(`[POST /lp/commit] topped up ${depositorKey.toBase58().slice(0, 8)}… with ${TOPUP_LAMPORTS / 1e9} SOL`);
+    }
+
     const tx = await client.commitLpCapital({
       eventHandleKey,
       depositor: depositorKey,
@@ -2515,14 +2537,10 @@ app.post("/lp/commit", async (req, res) => {
       vaultUsdc: vaultAta.address,
       amount: BigInt(amount),
       commitmentExpiresAt: BigInt(commitmentExpiresAt),
-      // Gasless from the user's POV — see /lp/commit-blind for rationale.
-      feePayer: client.relayer.publicKey,
     });
 
     const blockhash = await client.getConnection().getLatestBlockhash();
     tx.recentBlockhash = blockhash.blockhash;
-    // Partial-sign as fee payer; depositor sig added by the frontend.
-    tx.partialSign(client.relayer);
     const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
     res.json({ ok: true, txBase64: serialised });
   } catch (err: any) {
@@ -2597,16 +2615,40 @@ app.post("/lp/commit-blind", async (req, res) => {
       client.getConnection(), client.relayer, usdcMint, depositorKey, true,
     );
 
-    // Step 3: build the on-chain tx. In blind mode we use the new
+    // Step 3a: top up the depositor's SOL if low. Privy embedded /
+    // external wallets typically hold USDC but not SOL — requiring users
+    // to fund SOL just to LP is bad UX. We can't partial-sign the deposit
+    // tx as fee payer either: Privy's signTransaction adapter chokes on
+    // pre-signed txs ("e is not iterable"). So instead, the relayer sends
+    // a small SOL airdrop in a SEPARATE fully-relayer-signed tx, awaits
+    // confirmation, then returns a clean depositor-only-signs deposit tx.
+    const MIN_SOL_LAMPORTS = 2_000_000; // 0.002 SOL — ~400 tx worth of fees
+    const TOPUP_LAMPORTS = 5_000_000;   // 0.005 SOL
+    const currentSol = await client.getConnection().getBalance(depositorKey, "confirmed");
+    if (currentSol < MIN_SOL_LAMPORTS) {
+      const { SystemProgram, Transaction: SolanaTx } = await import("@solana/web3.js");
+      const topup = new SolanaTx().add(
+        SystemProgram.transfer({
+          fromPubkey: client.relayer.publicKey,
+          toPubkey: depositorKey,
+          lamports: TOPUP_LAMPORTS,
+        }),
+      );
+      const { blockhash: tbh } = await client.getConnection().getLatestBlockhash();
+      topup.recentBlockhash = tbh;
+      topup.feePayer = client.relayer.publicKey;
+      topup.sign(client.relayer);
+      const topupSig = await client.getConnection().sendRawTransaction(topup.serialize());
+      await client.getConnection().confirmTransaction(topupSig, "confirmed");
+      console.log(
+        `[POST /lp/commit-blind] topped up ${depositorKey.toBase58().slice(0, 8)}… with ${TOPUP_LAMPORTS / 1e9} SOL (had ${currentSol / 1e9}), sig=${topupSig.slice(0, 16)}…`,
+      );
+    }
+
+    // Step 3b: build the on-chain tx. In blind mode we use the new
     // commit_lp_capital_blind ix (carries ciphertext id). In plaintext-
     // fallback we use the existing commit_lp_capital so the deposit still
     // lands cleanly even when Encrypt is down.
-    //
-    // feePayer = relayer makes this gasless from the user's POV — Privy
-    // embedded / external wallets typically hold USDC but not SOL, and
-    // requiring users to fund SOL just to LP is bad UX. The relayer
-    // partial-signs below so only the depositor signature remains for the
-    // frontend to add.
     let tx;
     if (mode === "blind") {
       tx = await client.commitLpCapitalBlind({
@@ -2617,7 +2659,6 @@ app.post("/lp/commit-blind", async (req, res) => {
         amount: BigInt(amount),
         commitmentExpiresAt: BigInt(commitmentExpiresAt),
         fheCiphertextId: encryption.ciphertextId,
-        feePayer: client.relayer.publicKey,
       });
     } else {
       tx = await client.commitLpCapital({
@@ -2627,14 +2668,10 @@ app.post("/lp/commit-blind", async (req, res) => {
         vaultUsdc: vaultAta.address,
         amount: BigInt(amount),
         commitmentExpiresAt: BigInt(commitmentExpiresAt),
-        feePayer: client.relayer.publicKey,
       });
     }
     const blockhash = await client.getConnection().getLatestBlockhash();
     tx.recentBlockhash = blockhash.blockhash;
-    // Partial-sign as fee payer. The depositor signature is still required
-    // and will be added by the frontend via Privy.
-    tx.partialSign(client.relayer);
     const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
     res.json({
       ok: true,
