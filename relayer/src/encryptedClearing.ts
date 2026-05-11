@@ -20,11 +20,11 @@ import { Order, OrderSide, PRICE_DECIMALS } from "./types";
  *   3. For each candidate P, runs the fill logic homomorphically, summing
  *      filled volumes as ciphertexts.
  *   4. Picks the P that produced the most filled volume (selection is the
- *      one operation that needs to happen PUBLIC — current hackathon
- *      approach: iterate over plaintext candidates, keep running-best
- *      aggregates as ciphertexts, but the "which candidate wins" bit gets
- *      revealed at decrypt time. Production fix: partial decryption via
- *      2PC-MPC on the aggregator, or a ranked-choice FHE circuit).
+ *      one operation that needs to happen PUBLIC — current approach
+ *      iterates over plaintext candidates, keeping running-best aggregates
+ *      as ciphertexts; the "which candidate wins" bit gets revealed at
+ *      decrypt time. Production hardening: partial decryption via 2PC-MPC
+ *      on the aggregator, or a ranked-choice FHE circuit).
  *   5. Decrypt only: clearingPrice (the public winner), filled volumes
  *      (aggregate, no per-order info leaks).
  *
@@ -183,9 +183,9 @@ export function computeEncryptedClearing(
 
     // Selection: reveal only the total USDC-equivalent volume per
     // candidate so we can pick the winner. In real REFHE this is a
-    // controlled partial-decryption; per the module docstring, the
-    // hackathon approach is to decrypt per-candidate totals and keep the
-    // per-order contributions encrypted.
+    // controlled partial-decryption; the current approach decrypts
+    // per-candidate totals while keeping per-order contributions
+    // encrypted.
     const decYesBuy = backend.decrypt(yesBuySum);
     const decNoBuy = backend.decrypt(noBuySum);
     const decYesSell = backend.decrypt(yesSellSum);

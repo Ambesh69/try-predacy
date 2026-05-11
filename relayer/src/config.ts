@@ -19,7 +19,7 @@ export interface Config {
   rpcFastEnabled: boolean;
   // Yellowstone gRPC streaming. RPC Fast uses per-app keys, so the gRPC key
   // differs from the HTTP key (they're separate apps in the dashboard).
-  // Available on Hackathon plan for devnet; sub-100ms latency vs WebSocket.
+  // Sub-100ms latency vs WebSocket. Available on RPC Fast devnet plans.
   rpcFastGrpcApiKey?: string;
   rpcFastGrpcEnabled: boolean;
   /**
@@ -53,7 +53,7 @@ export function loadConfig(): Config {
   // the user should configure RPC_FAST_HTTP_URL + RPC_FAST_WSS_URL to match
   // their app's network.
   //
-  // Devnet (Hackathon plan):
+  // Devnet:
   //   RPC_FAST_HTTP_URL=https://sol-devnet-rpc.rpcfast.com
   //   RPC_FAST_WSS_URL=wss://sol-devnet-rpc.rpcfast.com
   //

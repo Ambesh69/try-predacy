@@ -53,6 +53,4 @@ Required env: `NEXT_PUBLIC_RELAYER_URL`, `NEXT_PUBLIC_PRIVY_APP_ID`
 - Program (predacy): `Bb3zRkLip445BQ1S44PC115aws8CCyag4KFkch9ZcKjp` (Solana devnet)
 - Program (predacy-fhe): `59ZxSvmRrzCWo4vFjUrdp8sZDCvW2yGU2MGG5EqesLQn` (Solana devnet)
 
----
-
-Built for the Colosseum Frontier hackathon. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the full design.
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the full design.

@@ -41,8 +41,8 @@ const oneLineErr = (err: unknown, max = 200): string => {
   return raw.replace(/\s+/g, " ").trim().slice(0, max);
 };
 
-// WebSocket-based log streamer — works on any RPC with WSS (RPC Fast Hackathon
-// plan, public RPC, etc.). Primary path for Predacy program event streaming.
+// WebSocket-based log streamer — works on any RPC with WSS (RPC Fast,
+// public RPC, etc.). Primary path for Predacy program event streaming.
 const logStreamer = getLogStreamer(client.getConnection(), config);
 logStreamer.start().catch((err) => console.error(`[logStreamer] Start failed: ${oneLineErr(err)}`));
 

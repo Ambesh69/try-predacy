@@ -2,11 +2,11 @@
  * WebSocket log subscription for Predacy program events.
  *
  * Uses Solana's standard `onLogs` subscription over WebSocket — works with
- * any RPC provider that supports WSS (RPC Fast Hackathon plan, Helius, Triton,
- * even public RPC). No Yellowstone gRPC required.
+ * any RPC provider that supports WSS (RPC Fast, Helius, Triton, even public
+ * RPC). No Yellowstone gRPC required.
  *
- * This is the Hackathon-plan-friendly path. If the user upgrades to RPC Fast's
- * Stream/Aperture plan, the gRPC streamer (grpcStreamer.ts) can be enabled for
+ * This is the WSS-friendly path for entry-tier RPC plans. On RPC Fast's
+ * Stream/Aperture tier, the gRPC streamer (grpcStreamer.ts) is enabled for
  * sub-ms latency instead. Both paths emit the same event shape to consumers.
  *
  * Predacy instruction discriminators (from the IDL) are used to classify

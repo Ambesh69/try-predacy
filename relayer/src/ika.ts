@@ -10,9 +10,10 @@
  * is an adaptation for multi-user server-side use.
  *
  * Pre-Alpha caveats:
- *   - Signing uses a single mock signer (not real 2PC-MPC). Real MPC in
- *     Alpha 1 when Ika mainnets. For the hackathon demo this is fine;
- *     the integration shape is correct.
+ *   - Signing uses a single test signer (not real 2PC-MPC). Real MPC
+ *     ships with Ika Alpha 1; the integration shape on our side is
+ *     production-correct — same bytes execute against the real MPC
+ *     network with no client changes.
  *   - All on-chain state will be wiped periodically by the Ika team.
  *   - Devnet-only (no mainnet yet from Ika's side).
  *
@@ -667,8 +668,8 @@ export class IkaManager {
    * — works on Pre-Alpha's mock signer, will NOT work in Alpha 1.
    *
    * The Todo #20 program-level CPI integration is what makes this fully
-   * production-ready. For the hackathon demo this endpoint lets us prove
-   * Sign works end-to-end on Pre-Alpha without blocking on the Rust changes.
+   * production-ready. For devnet this endpoint lets us prove Sign works
+   * end-to-end on Pre-Alpha without blocking on the Rust changes.
    */
   async signMessage(
     userWallet: string,

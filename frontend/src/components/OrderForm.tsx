@@ -86,7 +86,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
   // (~45-60s settle). See ARCHITECTURE.md §5.4 for the submit-vs-settle
   // latency framing. On devnet the toggle is advisory — the relayer's
   // PRIVACY_MODE env var is what actually routes the batch. Per-order
-  // strict routing ships post-hackathon.
+  // strict routing is on the roadmap.
   const [clearingMode, setClearingMode] = useState<"fast" | "strict">("fast");
   const [relayerClearingMode, setRelayerClearingMode] = useState<"fast" | "strict">("fast");
 
@@ -519,7 +519,7 @@ export function OrderForm({ marketId, marketQuestion, yesPrice, noPrice }: Order
         {/* Clearing Mode toggle — FHE strict vs plaintext fast (content hiding).
             Orthogonal to the identity-privacy toggle above: identity hiding
             (who) vs content hiding (what). On devnet the relayer's configured
-            mode is authoritative — per-order strict routing ships post-hackathon. */}
+            mode is authoritative — per-order strict routing on the roadmap. */}
         <div className={clsx(
           "border px-3 py-2.5 transition-colors",
           clearingMode === "strict" ? "border-warning/40 bg-warning/5" : "border-border/50",

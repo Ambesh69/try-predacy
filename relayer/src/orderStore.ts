@@ -2,7 +2,6 @@ import { Order, OrderSide } from "./types";
 
 /**
  * Order storage — keeps order preimages off-chain for settlement.
-
  *
  * In-memory implementation for devnet. Production: Redis with 7-day TTL.
  */

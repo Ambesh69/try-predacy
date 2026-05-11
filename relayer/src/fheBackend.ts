@@ -18,9 +18,9 @@
  * mode on devnet without an SDK — swap to the real backend and nothing
  * else changes.
  *
- * When the Encrypt REFHE SDK ships (expected post-hackathon), the swap is
- * a single file change: implement `FheBackend` in `refheBackend.ts` and
- * route `PRIVACY_MODE=strict` through it instead of the mock.
+ * When the Encrypt REFHE SDK ships Alpha 1, the swap is a single file
+ * change: implement `FheBackend` in `refheBackend.ts` and route
+ * `PRIVACY_MODE=strict` through it instead of the placeholder.
  */
 
 export type FheCiphertext = Uint8Array;

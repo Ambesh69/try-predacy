@@ -136,7 +136,10 @@ export async function generateBatchProof(
 }
 
 /**
- * Generate an empty-bytes placeholder proof. Rejected by the live verifier; used only by test paths that bypass on-chain verification.
+ * Generate an empty-bytes placeholder proof. Used by test paths that
+ * bypass on-chain verification; rejected by the live `settle_batch` /
+ * `claim_with_proof` instructions, which call the strict Groth16
+ * verifier and revert on any non-valid proof.
  */
 export function generateMockProof(): Groth16Proof {
   return {

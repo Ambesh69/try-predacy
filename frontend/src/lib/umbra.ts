@@ -145,9 +145,9 @@ export async function getUmbraClient(walletStandard: any) {
   try {
     const sdk: any = await import("@umbra-privacy/sdk");
     // Privy doesn't expose Solana wallet-standard interface directly.
-    // For the hackathon devnet demo we degrade gracefully — the ephemeral
-    // keypair pattern alone provides the wallet-unlinkability story; routing
-    // via the Umbra mixer is an additional production-deployment step.
+    // On devnet we degrade gracefully — the ephemeral keypair pattern
+    // alone provides the wallet-unlinkability story; routing via the
+    // Umbra mixer is an additional production-deployment step.
     if (!walletStandard?.wallet || !walletStandard?.account) {
       return null;
     }
