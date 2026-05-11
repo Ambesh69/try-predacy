@@ -296,6 +296,17 @@ export class EventLedger {
     this.persist();
   }
 
+  /** Rename the human-readable label of an event. Off-chain only — the
+   *  on-chain handleId stays canonical. Useful when an auto-generated
+   *  session label (e.g. "TRITON-SESSION-2026-05-04-…") needs a cleaner
+   *  display name. */
+  setLabel(handleId: string, newLabel: string): void {
+    const ev = this.events.get(handleId);
+    if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
+    ev.label = newLabel;
+    this.persist();
+  }
+
   /** ── Persistence ── */
 
   private persist(): void {

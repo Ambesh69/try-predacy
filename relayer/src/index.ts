@@ -1895,6 +1895,32 @@ app.post("/admin/events/:handle/reopen", express.json(), async (req, res) => {
   }
 });
 
+/**
+ * POST /admin/events/:handle/label
+ * Body: { label: string }
+ *
+ * Rename an event's human-readable label. Off-chain only — the
+ * on-chain handleId stays canonical. Used to give auto-generated
+ * session labels (e.g. "TRITON-SESSION-2026-05-04-…") cleaner display
+ * names without re-registering the EventHandle.
+ */
+app.post("/admin/events/:handle/label", express.json(), async (req, res) => {
+  try {
+    const handle = req.params.handle.toLowerCase();
+    const label = req.body?.label;
+    if (typeof label !== "string" || !label.trim()) {
+      return res.status(400).json({ error: "body.label (non-empty string) required" });
+    }
+    const ev = eventLedger.get(handle);
+    if (!ev) return res.status(404).json({ error: `unknown handle ${handle}` });
+    const prev = ev.label;
+    eventLedger.setLabel(handle, label.trim());
+    res.json({ ok: true, prev, label: label.trim() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/admin/events/:handle/close", async (req, res) => {
   try {
     const handle = req.params.handle.toLowerCase();
