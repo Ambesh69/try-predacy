@@ -11,11 +11,17 @@ export default function WalletButtonInner({ compact = false }: Props) {
   const { ready, authenticated, login, logout, user } = usePrivy();
   const { wallets } = useWallets();
 
-  // Prefer Solana address from linked accounts, fallback to main wallet
+  // Prefer the address of the actively-connected signing wallet (the one
+  // useWallets() exposes for tx signing). user.linkedAccounts can hold a
+  // non-signing identifier (e.g. an off-curve wrapper that Privy reports
+  // as "the wallet" but can't actually produce ed25519 signatures for)
+  // — showing that would mislead the user about which wallet is doing
+  // the trades. Fall back to linkedAccounts metadata only when no signing
+  // wallet is connected yet (pre-login state).
   const solanaWallet = user?.linkedAccounts?.find(
     (a: any) => a.type === "wallet" && a.chainType === "solana"
   ) as any;
-  const address = solanaWallet?.address ?? user?.wallet?.address ?? wallets[0]?.address;
+  const address = wallets[0]?.address ?? solanaWallet?.address ?? user?.wallet?.address;
   const short = address ? `${address.slice(0, 6)}…${address.slice(-4)}` : null;
 
   if (authenticated && short) {

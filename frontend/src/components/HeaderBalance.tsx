@@ -2,14 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { usePrivy } from "@privy-io/react-auth";
+import { useWallets as useSolanaWallets } from "@privy-io/react-auth/solana";
 import { getRelayerUrl } from "@/lib/relayerUrl";
 
 export default function HeaderBalance() {
   const { authenticated, user } = usePrivy();
+  const { wallets: solanaWallets } = useSolanaWallets();
   const solanaWallet = user?.linkedAccounts?.find(
     (a: any) => a.type === "wallet" && a.chainType === "solana"
   ) as any;
-  const walletAddress = solanaWallet?.address ?? user?.wallet?.address;
+  // Prefer the actively-connected signing wallet (useSolanaWallets()[0])
+  // over Privy linkedAccounts metadata. The metadata can hold an
+  // off-curve wrapper address that's not the wallet actually moving
+  // funds — showing it in the header makes the displayed USDC balance
+  // mismatch what the trading flow sees.
+  const walletAddress = solanaWallets[0]?.address ?? solanaWallet?.address ?? user?.wallet?.address;
   const [usdc, setUsdc] = useState<string | null>(null);
 
   useEffect(() => {
