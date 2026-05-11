@@ -2718,9 +2718,11 @@ app.get("/lp/positions", async (req, res) => {
     const walletKey = new PublicKey(wallet);
 
     const positions: any[] = [];
+    const debug: any[] = [];
     for (const ev of eventLedger.list()) {
       const eventHandleKey = new PublicKey(ev.eventHandlePda);
       const [vault] = client.lpVaultPda(eventHandleKey);
+      const [positionPda] = client.lpPositionPda(vault, walletKey);
       try {
         const pos = await client.fetchLpPosition(vault, walletKey);
         positions.push({
@@ -2733,11 +2735,39 @@ app.get("/lp/positions", async (req, res) => {
           commitmentExpiresAt: Number(pos.commitmentExpiresAt),
           withdrawn: pos.withdrawn,
         });
-      } catch {
-        // No position in this event — skip silently.
+      } catch (e: any) {
+        // Distinguish "account doesn't exist" (expected for events the
+        // user hasn't LP'd to) from "fetch failed for another reason"
+        // (deserialization mismatch, RPC error, etc.) which would
+        // silently hide real positions if swallowed.
+        const isMissing =
+          e?.message?.includes("Account does not exist") ||
+          e?.name === "AnchorError" ||
+          e?.message?.includes("could not find account");
+        debug.push({
+          handleId: ev.handleId,
+          vault: vault.toBase58(),
+          positionPda: positionPda.toBase58(),
+          err: e?.message ?? String(e),
+          missing: isMissing,
+        });
+        if (!isMissing) {
+          console.error(
+            `[GET /lp/positions] unexpected fetch error for handle=${ev.handleId} pos=${positionPda.toBase58()}:`,
+            e?.message,
+          );
+        }
       }
     }
-    res.json({ positions });
+    // Verbose log on EVERY call so we can correlate UI behaviour with
+    // what the relayer sees server-side.
+    console.log(
+      `[GET /lp/positions] wallet=${wallet} events=${eventLedger.list().length} found=${positions.length}`,
+    );
+    if (positions.length === 0 && eventLedger.list().length > 0) {
+      console.log(`[GET /lp/positions] debug:`, JSON.stringify(debug, null, 2));
+    }
+    res.json({ positions, debug: positions.length === 0 ? debug : undefined });
   } catch (err: any) {
     console.error("[GET /lp/positions] Error:", err.message);
     res.status(500).json({ error: err.message });
