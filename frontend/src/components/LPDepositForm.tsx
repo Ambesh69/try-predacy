@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { Connection } from "@solana/web3.js";
 import { usePrivy } from "@privy-io/react-auth";
@@ -15,9 +15,14 @@ import {
   formatUsdc6,
 } from "@/lib/lpApi";
 import { pushToast } from "@/components/Toast";
+import { getRelayerUrl } from "@/lib/relayerUrl";
 
-const RPC_URL =
-  process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com";
+// Browser-side polling RPC. Has to be CORS-friendly — our private rpcfast
+// URL (NEXT_PUBLIC_SOLANA_RPC_URL) doesn't allow cross-origin browser
+// requests, so we pin this to the public devnet endpoint regardless of
+// the env var. Public devnet has lower rate limits but we only hit it
+// during the 45s confirmation window per deposit.
+const BROWSER_RPC_URL = "https://api.devnet.solana.com";
 
 type Phase = "idle" | "encrypting" | "signing" | "submitting" | "success" | "error";
 
@@ -58,6 +63,40 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
   const [phase, setPhase] = useState<Phase>("idle");
   const [phaseDetail, setPhaseDetail] = useState("");
   const [resultMsg, setResultMsg] = useState<{ ok: boolean; msg: string; ctHex?: string; sig?: string } | null>(null);
+  const [usdcBalance, setUsdcBalance] = useState<bigint | null>(null);
+
+  // Fetch the depositor's USDC balance — surfaces an explicit "fund your
+  // wallet" error before the user wastes a signing round-trip. Uses the
+  // demo market id since /balances just needs any marketId to derive the
+  // USDC ATA (the mint is shared).
+  useEffect(() => {
+    if (!walletAddress) {
+      setUsdcBalance(null);
+      return;
+    }
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const demoMarketId = Buffer.from("predacy-demo-v1")
+          .toString("hex")
+          .padEnd(64, "0");
+        const res = await fetch(
+          `${getRelayerUrl()}/balances?wallet=${walletAddress}&marketId=${demoMarketId}`,
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setUsdcBalance(BigInt(data.usdc ?? "0"));
+      } catch {
+        /* keep prior value */
+      }
+    }
+    refresh();
+    const iv = setInterval(refresh, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [walletAddress]);
 
   const amountNum = parseFloat(amount || "0");
   const canSubmit =
@@ -89,6 +128,17 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
     try {
       const amountMicro = BigInt(Math.floor(amountNum * 1_000_000));
       const expiresAt = commitmentExpiresAt();
+
+      // ── Phase 0: pre-flight balance check. Catches the
+      // most common failure mode (depositor wallet underfunded) before
+      // we waste a signing round-trip and end up with a dropped tx that
+      // never lands on-chain.
+      if (usdcBalance !== null && amountMicro > usdcBalance) {
+        const have = (Number(usdcBalance) / 1_000_000).toFixed(2);
+        throw new Error(
+          `Not enough USDC in ${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)} — you have $${have}, need $${amountNum.toFixed(2)}. Fund this address and retry.`,
+        );
+      }
 
       // ── Phase 1: build (relayer encrypts amount via Encrypt CreateInput
       // when mode=blind, returns an unsigned tx with the ciphertext id) ──
@@ -137,7 +187,7 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
       capturedSig = sig;
       // eslint-disable-next-line no-console
       console.log("[LPDeposit] submitted tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
-      const conn = new Connection(RPC_URL, "confirmed");
+      const conn = new Connection(BROWSER_RPC_URL, "confirmed");
       const deadline = Date.now() + 45_000;
       let confirmed = false;
       while (Date.now() < deadline) {
@@ -212,9 +262,31 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
 
       {/* Amount */}
       <div className="space-y-2">
-        <label className="text-[10px] tracking-widest uppercase text-muted">
-          Amount (USDC)
-        </label>
+        <div className="flex items-baseline justify-between">
+          <label className="text-[10px] tracking-widest uppercase text-muted">
+            Amount (USDC)
+          </label>
+          {authenticated && (
+            <span className="text-[10px] text-muted tabular-nums">
+              Balance:{" "}
+              <span
+                className={clsx(
+                  "font-mono",
+                  usdcBalance === null
+                    ? "text-muted-dim"
+                    : amountNum > 0 &&
+                        BigInt(Math.floor(amountNum * 1_000_000)) > usdcBalance
+                      ? "text-danger"
+                      : "text-text",
+                )}
+              >
+                {usdcBalance === null
+                  ? "…"
+                  : `$${(Number(usdcBalance) / 1_000_000).toFixed(2)}`}
+              </span>
+            </span>
+          )}
+        </div>
         <div className="relative">
           <input
             type="number"
