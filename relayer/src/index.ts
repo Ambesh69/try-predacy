@@ -2503,6 +2503,9 @@ app.post("/lp/commit", async (req, res) => {
       client.relayer,
       usdcMint,
       depositorKey,
+      // Privy embedded wallets are off the ed25519 curve (MPC-derived).
+      // See the comment in /lp/commit-blind for the full rationale.
+      true,
     );
 
     const tx = await client.commitLpCapital({
@@ -2580,8 +2583,14 @@ app.post("/lp/commit-blind", async (req, res) => {
     const vaultAta = await getOrCreateAssociatedTokenAccount(
       client.getConnection(), client.relayer, usdcMint, vaultPda, true,
     );
+    // allowOwnerOffCurve=true: Privy embedded wallets (and other TSS /
+    // MPC-derived signers) produce pubkeys that are off the ed25519
+    // curve. The standard ATA derivation rejects these by default with
+    // TokenOwnerOffCurveError. Signing on the wallet side goes through
+    // the MPC stack so on-curve validation isn't a concern at the
+    // network level — the resulting signed tx is still a valid Solana tx.
     const depositorAta = await getOrCreateAssociatedTokenAccount(
-      client.getConnection(), client.relayer, usdcMint, depositorKey,
+      client.getConnection(), client.relayer, usdcMint, depositorKey, true,
     );
 
     // Step 3: build the on-chain tx. In blind mode we use the new
@@ -2700,8 +2709,10 @@ app.post("/lp/withdraw", async (req, res) => {
     const vaultAta = await getOrCreateAssociatedTokenAccount(
       client.getConnection(), client.relayer, usdcMint, vaultPda, true,
     );
+    // allowOwnerOffCurve=true for Privy / TSS-derived wallets — see
+    // /lp/commit-blind for the full rationale.
     const depositorAta = await getOrCreateAssociatedTokenAccount(
-      client.getConnection(), client.relayer, usdcMint, depositorKey,
+      client.getConnection(), client.relayer, usdcMint, depositorKey, true,
     );
 
     const tx = await client.withdrawLpCapital({
