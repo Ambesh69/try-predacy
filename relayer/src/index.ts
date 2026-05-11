@@ -2619,8 +2619,18 @@ app.post("/lp/commit-blind", async (req, res) => {
       ciphertextIdHex: mode === "blind" ? encryption.ciphertextId.toString("hex") : null,
     });
   } catch (err: any) {
-    console.error("[POST /lp/commit-blind] Error:", err.message);
-    res.status(500).json({ error: err.message });
+    // Full error dump — Solana RPC errors often have empty .message but
+    // detail under .logs / .transactionMessage / .stack. Default catch
+    // was silently dropping these.
+    const detail = {
+      message: err?.message || String(err),
+      logs: err?.logs,
+      name: err?.name,
+      code: err?.code,
+      stack: err?.stack?.split("\n").slice(0, 4).join(" | "),
+    };
+    console.error("[POST /lp/commit-blind] Error:", JSON.stringify(detail));
+    res.status(500).json({ error: detail.message, detail });
   }
 });
 
