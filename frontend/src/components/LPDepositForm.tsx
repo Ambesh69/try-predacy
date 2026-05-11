@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { Connection } from "@solana/web3.js";
 import { usePrivy } from "@privy-io/react-auth";
 import {
-  useSignAndSendTransaction,
+  useSignTransaction,
   useWallets as useSolanaWallets,
 } from "@privy-io/react-auth/solana";
 import {
@@ -55,7 +55,7 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
   const wallet =
     solanaWallets.find((w) => w.address === linkedAddress) ?? solanaWallets[0];
   const walletAddress: string | undefined = wallet?.address ?? linkedAddress;
-  const { signAndSendTransaction } = useSignAndSendTransaction();
+  const { signTransaction } = useSignTransaction();
 
   const [amount, setAmount] = useState("");
   const [presetIdx, setPresetIdx] = useState(0);
@@ -167,43 +167,39 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
         );
       }
 
-      // ── Phase 2: sign + send via Privy ──
-      // signAndSendTransaction is Privy's blessed path — the
-      // wallet.signTransaction direct call doesn't actually exist on
-      // the Privy ConnectedSolanaWallet shape and threw "e is not
-      // iterable". The relayer now top-ups the depositor's SOL via a
-      // separate tx before returning this one, so the previous "tx
-      // dropped during preflight" issue is also handled.
+      // ── Phase 2: Privy signs (no submit) + we broadcast ourselves ──
+      // signAndSendTransaction submits via Privy's internal RPC, which
+      // for this deployment appears to silently drop the tx (returns a
+      // local sig but the cluster never sees it — verified by
+      // getSignatureStatuses returning null even with > 5 SOL in the
+      // depositor wallet). useSignTransaction gives us back the signed
+      // bytes so we can broadcast through the public devnet RPC where
+      // we get real error responses.
       setPhase("signing");
       setPhaseDetail("Approve in your wallet…");
       const txBytes = decodeTxBase64(built.txBase64);
-      // Diagnostic: surface the addresses involved so the user can
-      // verify Privy is signing with the expected wallet. Mismatch
-      // here = invalid signature = tx silently dropped at preflight.
       // eslint-disable-next-line no-console
-      console.log("[LPDeposit] signer/depositor", {
+      console.log("[LPDeposit] signing with", {
         signerAddress: (wallet as any)?.address,
-        walletType: (wallet as any)?.walletClientType,
         depositorInTx: walletAddress,
-        linkedAddress,
-        allWallets: solanaWallets.map((w: any) => ({
-          address: w.address,
-          type: w.walletClientType,
-        })),
       });
-      const result = await signAndSendTransaction({
+      const { signedTransaction } = await signTransaction({
         transaction: txBytes,
         wallet: wallet as any,
         chain: "solana:devnet" as any,
       });
 
       setPhase("submitting");
-      setPhaseDetail("Confirming on Solana…");
-      const sig = bytesToBase58(result.signature);
+      setPhaseDetail("Broadcasting to Solana…");
+      const conn = new Connection(BROWSER_RPC_URL, "confirmed");
+      const sig = await conn.sendRawTransaction(signedTransaction, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
       capturedSig = sig;
       // eslint-disable-next-line no-console
-      console.log("[LPDeposit] submitted tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
-      const conn = new Connection(BROWSER_RPC_URL, "confirmed");
+      console.log("[LPDeposit] broadcast tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+      setPhaseDetail("Confirming on Solana…");
       const deadline = Date.now() + 45_000;
       let confirmed = false;
       while (Date.now() < deadline) {
