@@ -2,10 +2,9 @@
 
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { Connection } from "@solana/web3.js";
+import { Connection, Transaction } from "@solana/web3.js";
 import { usePrivy } from "@privy-io/react-auth";
 import {
-  useSignAndSendTransaction,
   useWallets as useSolanaWallets,
 } from "@privy-io/react-auth/solana";
 import {
@@ -55,7 +54,6 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
   const wallet =
     solanaWallets.find((w) => w.address === linkedAddress) ?? solanaWallets[0];
   const walletAddress: string | undefined = wallet?.address ?? linkedAddress;
-  const { signAndSendTransaction } = useSignAndSendTransaction();
 
   const [amount, setAmount] = useState("");
   const [presetIdx, setPresetIdx] = useState(0);
@@ -167,27 +165,32 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
         );
       }
 
-      // ── Phase 2: sign + send via Privy ──
+      // ── Phase 2: sign locally with Privy + broadcast ourselves ──
+      // Why not signAndSendTransaction? It re-serializes the tx through
+      // Privy's internal RPC, which (a) strips the relayer's partial
+      // fee-payer signature on some adapter paths and (b) submits via a
+      // RPC that doesn't surface errors back to us. Using the wallet's
+      // signTransaction (which IS additive — preserves the relayer's
+      // sig) and broadcasting through the public devnet RPC gives us
+      // both error visibility and signature preservation.
       setPhase("signing");
       setPhaseDetail("Approve in your wallet…");
       const txBytes = decodeTxBase64(built.txBase64);
-      const result = await signAndSendTransaction({
-        transaction: txBytes,
-        wallet: wallet as any,
-        chain: "solana:devnet" as any,
-      });
+      const tx = Transaction.from(txBytes);
+      const signed: Transaction = await (wallet as any).signTransaction(tx);
 
       setPhase("submitting");
-      setPhaseDetail("Confirming on Solana…");
-      // signAndSendTransaction returns as soon as the RPC accepts the tx —
-      // not when it confirms. Poll signature status so on-chain reverts
-      // (InsufficientBalance, EventClosed, etc.) surface as errors instead
-      // of false-positive "Deposit sealed" toasts.
-      const sig = bytesToBase58(result.signature);
+      setPhaseDetail("Broadcasting to Solana…");
+      const conn = new Connection(BROWSER_RPC_URL, "confirmed");
+      const rawSigned = signed.serialize();
+      const sig = await conn.sendRawTransaction(rawSigned, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
       capturedSig = sig;
       // eslint-disable-next-line no-console
-      console.log("[LPDeposit] submitted tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
-      const conn = new Connection(BROWSER_RPC_URL, "confirmed");
+      console.log("[LPDeposit] broadcast tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+      setPhaseDetail("Confirming on Solana…");
       const deadline = Date.now() + 45_000;
       let confirmed = false;
       while (Date.now() < deadline) {
