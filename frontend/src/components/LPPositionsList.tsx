@@ -31,7 +31,11 @@ export default function LPPositionsList({ refreshKey = 0 }: LPPositionsListProps
     solanaWalletMeta?.address ?? user?.wallet?.address;
   const { signAndSendTransaction } = useSignAndSendTransaction();
   const { wallets: solanaWallets } = useSolanaWallets();
-  const wallet = solanaWallets[0];
+  // Match against the linked external wallet — Privy also returns an
+  // auto-provisioned embedded wallet in this list, and we don't want
+  // withdrawals routed through that.
+  const wallet =
+    solanaWallets.find((w) => w.address === walletAddress) ?? solanaWallets[0];
 
   const [positions, setPositions] = useState<LPPosition[]>([]);
   const [loading, setLoading] = useState(true);
