@@ -1,7 +1,8 @@
 {
-  "name": "frontend",
+  "name": "predacy-frontend",
   "version": "0.1.0",
   "private": true,
+  "description": "Predacy — sealed-bid prediction markets on Solana. Next.js frontend with Privy auth, Umbra shielded order flow, and live-stream market discovery.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

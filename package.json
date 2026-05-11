@@ -25,15 +25,25 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
-  "name": "try-predacy",
-  "version": "1.0.0",
-  "description": "",
+  "name": "predacy",
+  "version": "0.1.0",
+  "description": "Sealed-bid prediction markets on Solana — FHE batch clearing, LMSR price discovery, Ika cross-chain settlement",
   "main": "index.js",
+  "keywords": [
+    "solana",
+    "anchor",
+    "prediction-markets",
+    "fhe",
+    "zk-snarks",
+    "groth16",
+    "lmsr",
+    "ika-dwallets",
+    "encrypt-protocol"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ambesh69/try-predacy.git"
   },
-  "keywords": [],
   "author": "",
   "type": "commonjs",
   "bugs": {
