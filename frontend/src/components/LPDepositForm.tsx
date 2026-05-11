@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import clsx from "clsx";
+import { Connection } from "@solana/web3.js";
 import { usePrivy } from "@privy-io/react-auth";
 import {
   useSignAndSendTransaction,
@@ -14,6 +15,9 @@ import {
   formatUsdc6,
 } from "@/lib/lpApi";
 import { pushToast } from "@/components/Toast";
+
+const RPC_URL =
+  process.env.NEXT_PUBLIC_SOLANA_RPC_URL || "https://api.devnet.solana.com";
 
 type Phase = "idle" | "encrypting" | "signing" | "submitting" | "success" | "error";
 
@@ -122,9 +126,40 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
 
       setPhase("submitting");
       setPhaseDetail("Confirming on Solana…");
-      // signAndSendTransaction already submitted to the cluster; we surface
-      // success once we have the signature back.
+      // signAndSendTransaction returns as soon as the RPC accepts the tx —
+      // not when it confirms. Poll signature status so on-chain reverts
+      // (InsufficientBalance, EventClosed, etc.) surface as errors instead
+      // of false-positive "Deposit sealed" toasts.
       const sig = bytesToBase58(result.signature);
+      const conn = new Connection(RPC_URL, "confirmed");
+      const deadline = Date.now() + 45_000;
+      let confirmed = false;
+      while (Date.now() < deadline) {
+        const r = await conn.getSignatureStatuses([sig], {
+          searchTransactionHistory: false,
+        });
+        const s = r.value?.[0];
+        if (s) {
+          if (s.err) {
+            throw new Error(
+              `Deposit reverted on-chain: ${JSON.stringify(s.err)}`,
+            );
+          }
+          if (
+            s.confirmationStatus === "confirmed" ||
+            s.confirmationStatus === "finalized"
+          ) {
+            confirmed = true;
+            break;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      if (!confirmed) {
+        throw new Error(
+          "Deposit not confirmed within 45s — check the explorer with the signature below.",
+        );
+      }
 
       setPhase("success");
       setPhaseDetail("");
@@ -331,9 +366,13 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
 function cleanError(raw: string): string {
   if (raw.includes("EventClosed")) return "Event has closed.";
   if (raw.includes("InsufficientBalance")) return "Not enough USDC in your wallet.";
+  // SPL token program returns this on insufficient source balance — surface
+  // it in plain English so the user knows to fund the right wallet.
+  if (raw.includes("0x1") && raw.toLowerCase().includes("custom"))
+    return "Not enough USDC in your wallet — fund the connected address and retry.";
   if (raw.includes("InvalidEventTiming")) return "Lockup window invalid for this event.";
   if (raw.includes("rejected")) return "Transaction rejected in wallet.";
-  if (raw.length > 100) return raw.slice(0, 100) + "…";
+  if (raw.length > 120) return raw.slice(0, 120) + "…";
   return raw;
 }
 
