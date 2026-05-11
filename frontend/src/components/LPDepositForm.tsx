@@ -57,7 +57,7 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
   const [blindMode, setBlindMode] = useState(true);
   const [phase, setPhase] = useState<Phase>("idle");
   const [phaseDetail, setPhaseDetail] = useState("");
-  const [resultMsg, setResultMsg] = useState<{ ok: boolean; msg: string; ctHex?: string } | null>(null);
+  const [resultMsg, setResultMsg] = useState<{ ok: boolean; msg: string; ctHex?: string; sig?: string } | null>(null);
 
   const amountNum = parseFloat(amount || "0");
   const canSubmit =
@@ -82,6 +82,9 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
   async function handleSubmit() {
     if (!canSubmit || !event || !walletAddress || !wallet) return;
     setResultMsg(null);
+    // Captured outside the try block so the catch can surface the
+    // explorer link even when the confirmation poll times out / reverts.
+    let capturedSig: string | undefined;
 
     try {
       const amountMicro = BigInt(Math.floor(amountNum * 1_000_000));
@@ -131,6 +134,9 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
       // (InsufficientBalance, EventClosed, etc.) surface as errors instead
       // of false-positive "Deposit sealed" toasts.
       const sig = bytesToBase58(result.signature);
+      capturedSig = sig;
+      // eslint-disable-next-line no-console
+      console.log("[LPDeposit] submitted tx", sig, `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
       const conn = new Connection(RPC_URL, "confirmed");
       const deadline = Date.now() + 45_000;
       let confirmed = false;
@@ -167,6 +173,7 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
         ok: true,
         msg: `Deposited $${amountNum.toFixed(2)} to ${event.handleId.slice(0, 8)}…`,
         ctHex: built.ciphertextIdHex,
+        sig,
       });
       pushToast(
         "success",
@@ -175,15 +182,18 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
       );
       setAmount("");
       onDeposited?.();
+      // 30s — long enough for the user to click the explorer link if
+      // they want to inspect the tx. They can dismiss it manually by
+      // starting another deposit (setResultMsg(null) on submit).
       setTimeout(() => {
         setPhase("idle");
         setResultMsg(null);
-      }, 5000);
+      }, 30_000);
     } catch (err: any) {
       setPhase("error");
       setPhaseDetail("");
       const msg = cleanError(err.message ?? "Deposit failed");
-      setResultMsg({ ok: false, msg });
+      setResultMsg({ ok: false, msg, sig: capturedSig });
       pushToast("error", "Deposit failed", msg);
     }
   }
@@ -342,6 +352,17 @@ export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps
             {resultMsg.ok ? "Deposit sealed" : "Failed"}
           </p>
           <p className="mt-1 leading-snug">{resultMsg.msg}</p>
+          {resultMsg.sig && (
+            <a
+              href={`https://explorer.solana.com/tx/${resultMsg.sig}?cluster=devnet`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1 inline-block font-mono text-[9px] text-muted hover:text-accent underline decoration-dotted underline-offset-2 truncate max-w-full"
+              title={resultMsg.sig}
+            >
+              tx {resultMsg.sig.slice(0, 12)}…{resultMsg.sig.slice(-8)} ↗
+            </a>
+          )}
           {resultMsg.ctHex && (
             <p className="mt-1 font-mono text-[9px] text-muted truncate">
               FHE ct: {resultMsg.ctHex.slice(0, 16)}…
