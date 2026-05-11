@@ -44,6 +44,19 @@ export default function EventPicker({
         if (!cancelled) {
           setEvents(next);
           setError(null);
+          // Sync the currently-selected event with its latest server-side
+          // copy. Without this, a `selected` event captured before
+          // `closesAt` (or any other field) changed on the relayer keeps
+          // its stale value — consumers like LPDepositForm read
+          // `selected.closesAt` to compute commitmentExpiresAt and the
+          // resulting tx fails the on-chain `commitment_expires_at <=
+          // event_handle.closes_at` check.
+          if (selected) {
+            const fresh = next.find((e) => e.handleId === selected.handleId);
+            if (fresh && fresh.closesAt !== selected.closesAt) {
+              onSelect(fresh);
+            }
+          }
         }
       } catch (err: any) {
         if (!cancelled) setError(err.message ?? "Failed to load events");
@@ -57,7 +70,8 @@ export default function EventPicker({
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.handleId]);
 
   const visible = events.filter((ev) => (hideClosed ? !ev.closed : true));
 
