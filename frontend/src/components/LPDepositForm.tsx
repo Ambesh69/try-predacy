@@ -30,13 +30,19 @@ interface LPDepositFormProps {
 
 export default function LPDepositForm({ event, onDeposited }: LPDepositFormProps) {
   const { authenticated, login, user } = usePrivy();
-  const solanaWalletMeta = user?.linkedAccounts?.find(
+  const { wallets: solanaWallets } = useSolanaWallets();
+  const wallet = solanaWallets[0];
+  // Use the SIGNING wallet's address as the depositor, not the Privy
+  // linkedAccounts metadata. The metadata can hold a non-signing
+  // identifier (e.g. an off-curve wrapper address that Privy reports
+  // as "the wallet" but can't actually produce ed25519 signatures for).
+  // Falling back to linkedAccounts only when the signing-wallet hook
+  // hasn't surfaced a wallet yet (pre-login state).
+  const linkedSolanaMeta = user?.linkedAccounts?.find(
     (a: any) => a.type === "wallet" && a.chainType === "solana",
   ) as any;
   const walletAddress: string | undefined =
-    solanaWalletMeta?.address ?? user?.wallet?.address;
-  const { wallets: solanaWallets } = useSolanaWallets();
-  const wallet = solanaWallets[0];
+    wallet?.address ?? linkedSolanaMeta?.address ?? user?.wallet?.address;
   const { signAndSendTransaction } = useSignAndSendTransaction();
 
   const [amount, setAmount] = useState("");
