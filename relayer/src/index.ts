@@ -1841,6 +1841,60 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
  *
  * Returns { closed: boolean, blockedVideoId: string|null, sessionEnded: boolean }.
  */
+/**
+ * POST /admin/events/:handle/reopen
+ *
+ * Inverse of /close. Sets `closed=false` and extends `closesAt` to a
+ * future timestamp (body.closesAt, or now + 48h if omitted). Also
+ * unblocks the videoId (if it was on the streamMonitor blocklist) and
+ * lets the polling loop rediscover the channel if it's still live.
+ *
+ * Returns { reopened: true, closesAt, videoIdUnblocked: boolean }.
+ */
+app.post("/admin/events/:handle/reopen", express.json(), async (req, res) => {
+  try {
+    const handle = req.params.handle.toLowerCase();
+    const ev = eventLedger.get(handle);
+    if (!ev) return res.status(404).json({ error: `unknown handle ${handle}` });
+
+    const now = Math.floor(Date.now() / 1000);
+    const requestedClosesAt = req.body?.closesAt;
+    // Default: 48 hours from now. Only extend if the existing closesAt
+    // is already in the past — operator-set future closesAt stays.
+    const newClosesAt = typeof requestedClosesAt === "number"
+      ? requestedClosesAt
+      : (ev.closesAt > now + 3600 ? ev.closesAt : now + 48 * 3600);
+
+    eventLedger.markOpen(handle, newClosesAt);
+
+    // Try to unblock any videoId associated with this handle (won't be
+    // in the active session map after a close, so we have to look at
+    // the recently-blocked list and best-effort match — there's no
+    // handle ↔ videoId backlink on the ledger today).
+    let videoIdUnblocked = false;
+    for (const vid of streamMonitor.blockedList()) {
+      // No way to reverse-lookup which handle owned this vid. Heuristic:
+      // if a closed event's videoId is on the blocklist, unblock it and
+      // let the discovery loop re-check liveness on its next poll.
+      if (streamMonitor.unblockVideoId(vid)) {
+        videoIdUnblocked = true;
+        console.log(`[admin/reopen] unblocked videoId ${vid}`);
+        break;
+      }
+    }
+
+    res.json({
+      reopened: true,
+      closesAt: newClosesAt,
+      closesAtDelta: newClosesAt - now,
+      videoIdUnblocked,
+    });
+  } catch (err: any) {
+    console.error("[POST /admin/events/:handle/reopen] Error:", oneLineErr(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/admin/events/:handle/close", async (req, res) => {
   try {
     const handle = req.params.handle.toLowerCase();

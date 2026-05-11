@@ -284,6 +284,18 @@ export class EventLedger {
     this.persist();
   }
 
+  /** Reopen a previously-closed event + optionally extend its closesAt
+   *  to a future timestamp. Used by /admin/events/:handle/reopen when
+   *  operator wants to undo a manual close, or when a session's window
+   *  expired but the event should remain visible / tradeable. */
+  markOpen(handleId: string, newClosesAt?: number): void {
+    const ev = this.events.get(handleId);
+    if (!ev) throw new Error(`EventLedger: unknown handle ${handleId}`);
+    ev.closed = false;
+    if (newClosesAt !== undefined) ev.closesAt = newClosesAt;
+    this.persist();
+  }
+
   /** ── Persistence ── */
 
   private persist(): void {
