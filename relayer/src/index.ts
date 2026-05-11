@@ -2515,10 +2515,14 @@ app.post("/lp/commit", async (req, res) => {
       vaultUsdc: vaultAta.address,
       amount: BigInt(amount),
       commitmentExpiresAt: BigInt(commitmentExpiresAt),
+      // Gasless from the user's POV — see /lp/commit-blind for rationale.
+      feePayer: client.relayer.publicKey,
     });
 
     const blockhash = await client.getConnection().getLatestBlockhash();
     tx.recentBlockhash = blockhash.blockhash;
+    // Partial-sign as fee payer; depositor sig added by the frontend.
+    tx.partialSign(client.relayer);
     const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
     res.json({ ok: true, txBase64: serialised });
   } catch (err: any) {
@@ -2597,6 +2601,12 @@ app.post("/lp/commit-blind", async (req, res) => {
     // commit_lp_capital_blind ix (carries ciphertext id). In plaintext-
     // fallback we use the existing commit_lp_capital so the deposit still
     // lands cleanly even when Encrypt is down.
+    //
+    // feePayer = relayer makes this gasless from the user's POV — Privy
+    // embedded / external wallets typically hold USDC but not SOL, and
+    // requiring users to fund SOL just to LP is bad UX. The relayer
+    // partial-signs below so only the depositor signature remains for the
+    // frontend to add.
     let tx;
     if (mode === "blind") {
       tx = await client.commitLpCapitalBlind({
@@ -2607,6 +2617,7 @@ app.post("/lp/commit-blind", async (req, res) => {
         amount: BigInt(amount),
         commitmentExpiresAt: BigInt(commitmentExpiresAt),
         fheCiphertextId: encryption.ciphertextId,
+        feePayer: client.relayer.publicKey,
       });
     } else {
       tx = await client.commitLpCapital({
@@ -2616,10 +2627,14 @@ app.post("/lp/commit-blind", async (req, res) => {
         vaultUsdc: vaultAta.address,
         amount: BigInt(amount),
         commitmentExpiresAt: BigInt(commitmentExpiresAt),
+        feePayer: client.relayer.publicKey,
       });
     }
     const blockhash = await client.getConnection().getLatestBlockhash();
     tx.recentBlockhash = blockhash.blockhash;
+    // Partial-sign as fee payer. The depositor signature is still required
+    // and will be added by the frontend via Privy.
+    tx.partialSign(client.relayer);
     const serialised = tx.serialize({ requireAllSignatures: false }).toString("base64");
     res.json({
       ok: true,

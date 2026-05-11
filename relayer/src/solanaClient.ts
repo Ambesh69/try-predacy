@@ -755,6 +755,8 @@ export class SolanaClient {
     vaultUsdc: PublicKey;
     amount: bigint;
     commitmentExpiresAt: bigint;
+    /** Optional fee payer (see commitLpCapitalBlind for rationale). */
+    feePayer?: PublicKey;
   }): Promise<Transaction> {
     const [vault] = this.lpVaultPda(args.eventHandleKey);
     const [position] = this.lpPositionPda(vault, args.depositor);
@@ -775,7 +777,7 @@ export class SolanaClient {
       })
       .instruction();
     const tx = new Transaction().add(ix);
-    tx.feePayer = args.depositor;
+    tx.feePayer = args.feePayer ?? args.depositor;
     return tx;
   }
 
@@ -795,6 +797,10 @@ export class SolanaClient {
     amount: bigint;
     commitmentExpiresAt: bigint;
     fheCiphertextId: Buffer;  // 32 bytes — produced by blindLp.encryptDepositAmount
+    /** Optional fee payer. Defaults to depositor (user pays). Pass the
+     *  relayer pubkey to make this gasless from the user's POV — the
+     *  caller must then partial-sign with the matching keypair. */
+    feePayer?: PublicKey;
   }): Promise<Transaction> {
     if (args.fheCiphertextId.length !== 32) {
       throw new Error(`commitLpCapitalBlind: ciphertext id must be 32 bytes, got ${args.fheCiphertextId.length}`);
@@ -819,7 +825,7 @@ export class SolanaClient {
       })
       .instruction();
     const tx = new Transaction().add(ix);
-    tx.feePayer = args.depositor;
+    tx.feePayer = args.feePayer ?? args.depositor;
     return tx;
   }
 
