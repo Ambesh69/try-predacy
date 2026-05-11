@@ -1827,6 +1827,51 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
 });
 
 /**
+ * POST /admin/events/:handle/close
+ *
+ * Closes an EventHandle for new orders + tears down the agent session
+ * pointing at it + adds the underlying videoId to the streamMonitor's
+ * blocklist so the polling loop won't re-spawn a session on this video.
+ *
+ * Use case: a YouTube channel airing mixed programming (e.g. multiple
+ * tables/shows on the same videoId) where the auto-extracted lineup
+ * keeps drifting and there's no single coherent "current table." Muting
+ * the videoId keeps the agent focused on the channels with single-table
+ * broadcasts.
+ *
+ * Returns { closed: boolean, blockedVideoId: string|null, sessionEnded: boolean }.
+ */
+app.post("/admin/events/:handle/close", async (req, res) => {
+  try {
+    const handle = req.params.handle.toLowerCase();
+    const ev = eventLedger.get(handle);
+    if (!ev) return res.status(404).json({ error: `unknown handle ${handle}` });
+
+    // 1. Find the active session (if any) tied to this handle so we can
+    //    capture the videoId for the blocklist before tearing it down.
+    const active = streamMonitor.listActive();
+    const sess = active.find((s) => s.handleIdHex.toLowerCase() === handle);
+    const videoId = sess?.videoId ?? null;
+
+    // 2. Mark closed in the ledger (filters it out of the public events list,
+    //    blocks any further commit_order intake at the relayer level).
+    eventLedger.markClosed(handle);
+
+    // 3. Block the videoId + end its session via the streamMonitor.
+    if (videoId) streamMonitor.blockVideoId(videoId);
+
+    res.json({
+      closed: true,
+      blockedVideoId: videoId,
+      sessionEnded: !!sess,
+    });
+  } catch (err: any) {
+    console.error("[POST /admin/events/:handle/close] Error:", oneLineErr(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /agent/sessions/:identifier/prune-stale-markets
  *
  * Resolves every unresolved market attached to the session's EventHandle
@@ -1967,9 +2012,14 @@ app.post("/events", async (req, res) => {
   }
 });
 
-/** GET /events — list registered events. */
-app.get("/events", (_req, res) => {
-  const events = eventLedger.list().map((ev) => ({
+/** GET /events — list registered events. Closed events are filtered
+ *  out by default; pass `?includeClosed=1` for ops/admin tooling that
+ *  needs the full set. */
+app.get("/events", (req, res) => {
+  const includeClosed = req.query.includeClosed === "1" || req.query.includeClosed === "true";
+  const all = eventLedger.list();
+  const visible = includeClosed ? all : all.filter((ev) => !ev.closed);
+  const events = visible.map((ev) => ({
     handleId: ev.handleId,
     label: ev.label,
     category: ev.category,

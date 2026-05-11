@@ -739,6 +739,13 @@ export class StreamMonitor {
     }
 
     for (const v of discovered) {
+      if (this.isBlocked(v.videoId)) {
+        // Operator has explicitly muted this videoId — usually because
+        // it's a mixed-programming channel (multiple shows on one stream)
+        // that we don't want auto-detected as a single coherent table.
+        console.log(`[StreamMonitor] ${ch.tag} skipping ${v.videoId} (on blocklist)`);
+        continue;
+      }
       await this.handleNewLiveVideo(ch, v, now);
     }
   }
@@ -978,6 +985,40 @@ export class StreamMonitor {
     delete this.state.active[session.handleIdHex];
     // TODO(day-5): emit settlement-pending event for the settlement engine
     // to pick up. Stats for this session live in this.stats.get(label).
+  }
+
+  /** VideoIds we explicitly refuse to spawn a session for. Used when a
+   *  channel is broadcasting mixed programming (multiple tables / shows
+   *  on the same videoId) and we want the polling loop to ignore it
+   *  rather than keep re-creating a session after manual cleanup.
+   *  In-memory only — cleared on relayer restart. */
+  private blockedVideoIds: Set<string> = new Set();
+
+  /** Add a videoId to the blocklist + tear down any active session
+   *  pointing at it. Public wrapper around endSession. */
+  blockVideoId(videoId: string): void {
+    this.blockedVideoIds.add(videoId);
+    for (const sess of Object.values(this.state.active)) {
+      if (sess.videoId === videoId) {
+        this.endSession(sess, "manually blocked");
+      }
+    }
+  }
+
+  /** True if this videoId is on the blocklist. Called from the poll
+   *  loop before session creation to skip mixed-programming streams. */
+  isBlocked(videoId: string): boolean {
+    return this.blockedVideoIds.has(videoId);
+  }
+
+  /** Remove a videoId from the blocklist. Used by a future admin endpoint
+   *  to undo a block without restarting the relayer. */
+  unblockVideoId(videoId: string): boolean {
+    return this.blockedVideoIds.delete(videoId);
+  }
+
+  blockedList(): string[] {
+    return [...this.blockedVideoIds];
   }
 
   // ─── State persistence ─────────────────────────────────────────────
