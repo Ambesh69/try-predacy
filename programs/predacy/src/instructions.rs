@@ -23,6 +23,7 @@ pub mod resolve_market;
 pub mod redeem_outcome;
 pub mod approve_ika_message;
 pub mod verify_test_vectors;
+pub mod update_event_close;
 
 pub use initialize::*;
 pub use create_event_handle::*;
@@ -49,3 +50,4 @@ pub use resolve_market::*;
 pub use redeem_outcome::*;
 pub use approve_ika_message::*;
 pub use verify_test_vectors::*;
+pub use update_event_close::*;

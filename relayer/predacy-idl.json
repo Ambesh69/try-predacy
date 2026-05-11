@@ -4,7 +4,7 @@
     "name": "predacy",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Created with Anchor"
+    "description": "Predacy core Anchor program — sealed-bid batch auctions, LMSR bootstrap pools, blind LP vault, claim + redeem on Solana"
   },
   "instructions": [
     {
@@ -2187,6 +2187,40 @@
         {
           "name": "order_count",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "update_event_close",
+      "docs": [
+        "Extend (or shorten) the `closes_at` timestamp on an existing",
+        "EventHandle. Authority-only. Used when a long-running broadcast",
+        "outlives its originally-registered close window."
+      ],
+      "discriminator": [
+        108,
+        248,
+        64,
+        34,
+        154,
+        119,
+        68,
+        163
+      ],
+      "accounts": [
+        {
+          "name": "event_handle",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_closes_at",
+          "type": "i64"
         }
       ]
     },

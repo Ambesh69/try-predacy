@@ -303,6 +303,13 @@ pub mod predacy {
         instructions::resolve_market::handler(ctx, outcome)
     }
 
+    /// Extend (or shorten) the `closes_at` timestamp on an existing
+    /// EventHandle. Authority-only. Used when a long-running broadcast
+    /// outlives its originally-registered close window.
+    pub fn update_event_close(ctx: Context<UpdateEventClose>, new_closes_at: i64) -> Result<()> {
+        instructions::update_event_close::handler(ctx, new_closes_at)
+    }
+
     pub fn redeem_outcome(ctx: Context<RedeemOutcome>, amount: u64) -> Result<()> {
         instructions::redeem_outcome::handler(ctx, amount)
     }

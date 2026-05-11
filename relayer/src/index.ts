@@ -1842,6 +1842,45 @@ app.post("/agent/sessions/:identifier/refresh", async (req, res) => {
  * Returns { closed: boolean, blockedVideoId: string|null, sessionEnded: boolean }.
  */
 /**
+ * POST /admin/events/:handle/extend-onchain
+ * Body: { newClosesAt?: number } (defaults to now + 48h)
+ *
+ * Calls the `update_event_close` ix on-chain to update the EventHandle
+ * account's `closes_at`. Required when the originally-registered close
+ * window has expired but downstream constraints (commit_lp_capital,
+ * commit_lp_capital_blind, settle_batch) still need future timestamps
+ * to validate against.
+ *
+ * Authority: relayer keypair (= EventHandle.authority by convention).
+ * Returns { tx, prevClosesAt, newClosesAt }.
+ */
+app.post("/admin/events/:handle/extend-onchain", express.json(), async (req, res) => {
+  try {
+    const handle = req.params.handle.toLowerCase();
+    const ev = eventLedger.get(handle);
+    if (!ev) return res.status(404).json({ error: `unknown handle ${handle}` });
+
+    const now = Math.floor(Date.now() / 1000);
+    const newClosesAt = typeof req.body?.newClosesAt === "number"
+      ? req.body.newClosesAt
+      : now + 48 * 3600;
+
+    if (newClosesAt <= now) {
+      return res.status(400).json({ error: "newClosesAt must be in the future" });
+    }
+
+    const tx = await client.updateEventClose(handle, newClosesAt);
+    // Mirror into the ledger so off-chain reads stay consistent.
+    eventLedger.markOpen(handle, newClosesAt);
+
+    res.json({ ok: true, tx, newClosesAt, newClosesAtDelta: newClosesAt - now });
+  } catch (err: any) {
+    console.error("[POST /admin/events/:handle/extend-onchain] Error:", oneLineErr(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /admin/events/:handle/reopen
  *
  * Inverse of /close. Sets `closed=false` and extends `closesAt` to a

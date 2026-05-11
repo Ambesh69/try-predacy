@@ -574,6 +574,25 @@ export class SolanaClient {
     return tx;
   }
 
+  /** Extend (or shorten) the on-chain `closes_at` timestamp on an
+   *  existing EventHandle. Authority-only. Used when a long-running
+   *  broadcast outlives its originally-registered close window and we
+   *  need downstream constraints (commit_lp_capital, settle_batch) to
+   *  accept future commitment_expires_at values. */
+  async updateEventClose(handleIdHex: string, newClosesAt: number): Promise<string> {
+    const handleIdBuf = Buffer.from(handleIdHex.replace(/^0x/, ""), "hex");
+    const [eventHandle] = this.eventHandlePda(handleIdBuf);
+    const tx = await this.program.methods
+      .updateEventClose(new anchor.BN(newClosesAt))
+      .accounts({
+        eventHandle,
+        authority: this.relayer.publicKey,
+      })
+      .rpc();
+    console.log(`[updateEventClose] handle=${handleIdHex.slice(0, 8)}… newClosesAt=${newClosesAt} tx: ${tx}`);
+    return tx;
+  }
+
   // ─── Account Fetchers ───
 
   async fetchBatch(marketId: Buffer, batchIndex: bigint) {
